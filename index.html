@@ -370,23 +370,46 @@ async function fetchMarket() {
 }
 
 async function fetchChain() {
+  const list = document.getElementById("trade-list");
   try {
-    const provider  = new ethers.JsonRpcProvider(RPC);
-    const balWei    = await provider.getBalance(WALLET);
-    const balEth    = parseFloat(ethers.formatEther(balWei));
-    document.getElementById("eth-bal").textContent = balEth.toFixed(4) + " ETH";
+    const provider = new ethers.JsonRpcProvider(RPC);
 
-    const contract = new ethers.Contract(CONTRACT, ABI, provider);
-    const trades   = await contract.getTrades(WALLET);
-    document.getElementById("trade-count").textContent = trades.length;
-    document.getElementById("portfolio").textContent   = "$" + (balEth * 2100 + 700).toFixed(0);
-    document.getElementById("portfolio-sub").textContent = balEth.toFixed(4) + " ETH + USDC";
+    // ETH balance — separate try so a contract error doesn't kill balance display
+    try {
+      const balWei = await provider.getBalance(WALLET);
+      const balEth = parseFloat(ethers.formatEther(balWei));
+      document.getElementById("eth-bal").textContent      = balEth.toFixed(4) + " ETH";
+      document.getElementById("portfolio").textContent    = "$" + (balEth * 2100 + 700).toFixed(0);
+      document.getElementById("portfolio-sub").textContent = balEth.toFixed(4) + " ETH + USDC";
+    } catch(_) {}
 
-    const list = document.getElementById("trade-list");
+    // Trade log — contract may return empty bytes if no trades yet
+    let trades = [];
+    try {
+      const contract = new ethers.Contract(CONTRACT, ABI, provider);
+      trades = await contract.getTrades(WALLET);
+    } catch(contractErr) {
+      // BAD_DATA / empty return = no trades logged yet, treat as empty array
+      const msg = contractErr.message || "";
+      if (msg.includes("BAD_DATA") || msg.includes("0x") || msg.includes("could not decode")) {
+        trades = [];
+      } else {
+        throw contractErr;
+      }
+    }
+
+    document.getElementById("trade-count").textContent = trades.length || "0";
+
     if (!trades.length) {
-      list.innerHTML = `<div class="empty">No trades logged yet.<br>Agent is running — first trade will appear here<br>once Claude executes a BUY or SELL.</div>`;
+      list.innerHTML = `<div class="empty">
+        No trades logged yet.<br><br>
+        Agent is live and monitoring — a trade entry<br>
+        will appear here once Claude executes a BUY or SELL<br>
+        and the market conditions warrant it.
+      </div>`;
       return;
     }
+
     list.innerHTML = [...trades].reverse().slice(0,8).map(t => {
       const amt  = (Number(t.amountUsd)/100).toFixed(2);
       const px   = (Number(t.ethPrice)/100).toFixed(0);
@@ -404,8 +427,9 @@ async function fetchChain() {
         <span class="trade-time">${time}</span>
       </div>`;
     }).join("");
+
   } catch(e) {
-    document.getElementById("trade-list").innerHTML = `<div class="err">RPC error: ${e.message}</div>`;
+    list.innerHTML = `<div class="err">Connection error — check RPC: ${e.message.slice(0,80)}</div>`;
   }
 }
 
