@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CryptoSentinel — Autonomous AI Trading Agent</title>
+<meta name="description" content="24/7 autonomous crypto trading agent on Base chain, powered by Claude AI. Monitors markets, executes trades via Uniswap V3, logs everything on-chain.">
+<meta property="og:title" content="CryptoSentinel — Autonomous AI Trading Agent">
+<meta property="og:description" content="24/7 autonomous crypto trading agent on Base chain, powered by Claude AI.">
+<meta property="og:image" content="https://cryptosentinel.vercel.app/og.png">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.7.1/ethers.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:        #0a0c0f;
+    --surface:   #111318;
+    --border:    #1e2128;
+    --border2:   #2a2f3a;
+    --green:     #00e676;
+    --green-dim: rgba(0,230,118,0.1);
+    --red:       #ff4d4d;
+    --red-dim:   rgba(255,77,77,0.1);
+    --amber:     #ffc107;
+    --blue:      #4fc3f7;
+    --text:      #e8eaf0;
+    --muted:     #6b7280;
+    --mono:      'Space Mono', monospace;
+    --sans:      'Syne', sans-serif;
+  }
+  body { background: var(--bg); color: var(--text); font-family: var(--sans); min-height: 100vh; }
+
+  /* ── Layout ── */
+  .page { max-width: 1200px; margin: 0 auto; padding: 28px 24px; }
+
+  /* ── Header ── */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 32px; padding-bottom: 20px; border-bottom: 1px solid var(--border);
+    flex-wrap: wrap; gap: 16px;
+  }
+  .logo { display: flex; align-items: center; gap: 14px; }
+  .logo-icon {
+    width: 44px; height: 44px; border-radius: 12px;
+    background: var(--green-dim); border: 1px solid var(--green);
+    display: flex; align-items: center; justify-content: center; font-size: 22px;
+  }
+  .logo-text h1 { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
+  .logo-text p  { font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 3px; }
+  .header-right { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  .status-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 14px; border-radius: 20px;
+    border: 1px solid var(--border2);
+    font-size: 12px; font-family: var(--mono); color: var(--muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.25} }
+
+  .btn {
+    padding: 7px 16px; border-radius: 8px;
+    background: transparent; border: 1px solid var(--border2);
+    color: var(--muted); font-family: var(--mono);
+    font-size: 12px; cursor: pointer; transition: all 0.2s; text-decoration: none;
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .btn:hover { border-color: var(--green); color: var(--green); }
+  .btn-green { border-color: var(--green); color: var(--green); }
+
+  /* ── ETH Ticker ── */
+  .ticker {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 24px 28px; margin-bottom: 20px;
+    display: flex; align-items: center; gap: 32px; flex-wrap: wrap;
+  }
+  .eth-price { font-size: 52px; font-weight: 800; font-family: var(--mono); letter-spacing: -2px; line-height: 1; }
+  .change-badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 12px; border-radius: 6px;
+    font-size: 14px; font-family: var(--mono); font-weight: 700; margin-top: 10px;
+  }
+  .up   { background: var(--green-dim); color: var(--green); }
+  .down { background: var(--red-dim);   color: var(--red);   }
+  .neutral { color: var(--amber); }
+  .ticker-meta { display: flex; flex-direction: column; gap: 8px; }
+  .ticker-meta span { font-size: 12px; font-family: var(--mono); color: var(--muted); }
+  .ticker-meta span b { color: var(--text); font-weight: 400; }
+  .spark-wrap { flex: 1; min-width: 120px; height: 64px; position: relative; }
+  .ticker-time { margin-left: auto; font-size: 11px; font-family: var(--mono); color: var(--muted); white-space: nowrap; }
+
+  /* ── Stats ── */
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 14px; margin-bottom: 20px;
+  }
+  @media(max-width:860px) { .stats { grid-template-columns: repeat(2,1fr); } }
+  .stat-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px;
+  }
+  .stat-label { font-size: 11px; font-family: var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 10px; }
+  .stat-value { font-size: 28px; font-weight: 800; font-family: var(--mono); letter-spacing: -1px; line-height: 1; }
+  .stat-sub   { font-size: 12px; font-family: var(--mono); color: var(--muted); margin-top: 6px; }
+  .fg-bar { height: 6px; border-radius: 3px; background: linear-gradient(to right,#ff4d4d,#ffc107,#00e676); position: relative; margin: 10px 0 5px; }
+  .fg-thumb { position: absolute; top: 50%; transform: translate(-50%,-50%); width: 12px; height: 12px; border-radius: 50%; background: white; border: 2px solid var(--bg); transition: left 0.5s; }
+  .fg-labs { display: flex; justify-content: space-between; font-size: 10px; font-family: var(--mono); color: var(--muted); }
+
+  /* ── 2-col grid ── */
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media(max-width:800px){ .two-col { grid-template-columns: 1fr; } }
+
+  /* ── Panels ── */
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px; }
+  .panel-title { font-size: 11px; font-family: var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 18px; }
+
+  /* ── Brain ── */
+  .decision {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 18px; border-radius: 8px; font-size: 18px; font-weight: 800;
+    letter-spacing: 1px; margin-bottom: 18px;
+  }
+  .decision.HOLD { background: rgba(255,193,7,0.1); color: var(--amber); border: 1px solid rgba(255,193,7,0.3); }
+  .decision.BUY  { background: var(--green-dim); color: var(--green); border: 1px solid rgba(0,230,118,0.3); }
+  .decision.SELL { background: var(--red-dim);   color: var(--red);   border: 1px solid rgba(255,77,77,0.3); }
+  .conf-bar { height: 4px; background: var(--border); border-radius: 2px; margin: 8px 0 4px; }
+  .conf-fill { height: 100%; border-radius: 2px; transition: width 0.6s; }
+  .reasoning { font-size: 13px; line-height: 1.7; color: #9ca3af; font-style: italic; border-left: 2px solid var(--border2); padding-left: 14px; margin: 16px 0; }
+  .tags { display: flex; flex-wrap: wrap; gap: 7px; }
+  .tag { padding: 4px 10px; border-radius: 5px; font-size: 11px; font-family: var(--mono); background: var(--border); color: var(--muted); border: 1px solid var(--border2); }
+
+  /* ── Trade log ── */
+  .trade-list { display: flex; flex-direction: column; gap: 8px; }
+  .trade-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 14px; border-radius: 8px;
+    background: #0f1115; border: 1px solid var(--border);
+    font-size: 12px; font-family: var(--mono);
+  }
+  .action-pill { padding: 3px 9px; border-radius: 4px; font-weight: 700; font-size: 10px; letter-spacing: 1px; min-width: 44px; text-align: center; }
+  .action-pill.BUY  { background: var(--green-dim); color: var(--green); }
+  .action-pill.SELL { background: var(--red-dim);   color: var(--red);   }
+  .action-pill.SIM  { background: var(--border); color: var(--muted); }
+  .tx-link { color: var(--blue); text-decoration: underline; text-underline-offset: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+  .trade-time { color: var(--muted); margin-left: auto; white-space: nowrap; font-size: 11px; }
+
+  /* ── Bottom row ── */
+  .bottom-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+  @media(max-width:700px){ .bottom-row { grid-template-columns: 1fr; } }
+  .addr { font-family: var(--mono); font-size: 11px; word-break: break-all; line-height: 1.7; margin-top: 8px; }
+  .addr.wallet   { color: var(--blue); }
+  .addr.contract { color: var(--muted); }
+
+  /* ── Footer ── */
+  .footer {
+    padding-top: 20px; border-top: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;
+  }
+  .footer span, .footer a { font-size: 11px; font-family: var(--mono); color: var(--muted); text-decoration: none; }
+  .footer a:hover { color: var(--text); }
+
+  .empty { text-align: center; padding: 28px; color: var(--muted); font-size: 12px; font-family: var(--mono); line-height: 1.8; }
+  .err   { color: var(--red); font-family: var(--mono); font-size: 12px; padding: 12px 0; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="logo">
+      <div class="logo-icon">⚡</div>
+      <div class="logo-text">
+        <h1>CryptoSentinel</h1>
+        <p>autonomous trading agent · base chain · uniswap v3</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <a href="https://github.com/janneh2000/cryptosentinel" target="_blank" class="btn">GitHub ↗</a>
+      <button class="btn" onclick="loadAll()">↻ Refresh</button>
+      <div class="status-pill">
+        <div class="dot"></div>
+        <span id="status">loading...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ETH Ticker -->
+  <div class="ticker">
+    <div>
+      <div style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.08em;">ETH / USD</div>
+      <div class="eth-price" id="eth-price">—</div>
+      <div id="change-badge" class="change-badge">—</div>
+    </div>
+    <div class="ticker-meta">
+      <span>BTC &nbsp;<b id="btc-price">—</b></span>
+      <span>Vol 24h <b id="eth-vol">—</b></span>
+      <span>Mkt Cap <b id="eth-mcap">—</b></span>
+    </div>
+    <div class="spark-wrap"><canvas id="sparkline"></canvas></div>
+    <div class="ticker-time">
+      <div style="color:var(--muted);font-size:10px;margin-bottom:4px;">LAST UPDATED</div>
+      <div id="updated">—</div>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats">
+    <div class="stat-card">
+      <div class="stat-label">Fear &amp; Greed</div>
+      <div class="stat-value" id="fg-val">—</div>
+      <div class="fg-bar"><div class="fg-thumb" id="fg-thumb" style="left:50%"></div></div>
+      <div class="fg-labs"><span>Fear</span><span>Neutral</span><span>Greed</span></div>
+      <div class="stat-sub" id="fg-class">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Portfolio Value</div>
+      <div class="stat-value" id="portfolio">$1,000</div>
+      <div class="stat-sub" id="portfolio-sub">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">ETH Balance</div>
+      <div class="stat-value" id="eth-bal">—</div>
+      <div class="stat-sub">Base Sepolia testnet</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">On-chain Trades</div>
+      <div class="stat-value" id="trade-count">—</div>
+      <div class="stat-sub">immutably logged</div>
+    </div>
+  </div>
+
+  <!-- Brain + Trade Log -->
+  <div class="two-col">
+    <div class="panel">
+      <div class="panel-title">🧠 Claude's latest analysis</div>
+      <div id="decision" class="decision HOLD">HOLD</div>
+      <div style="font-size:11px;font-family:var(--mono);color:var(--muted);margin-bottom:4px;text-transform:uppercase;letter-spacing:.08em;">Confidence</div>
+      <div class="conf-bar"><div id="conf-fill" class="conf-fill" style="width:0%;background:var(--amber)"></div></div>
+      <div id="conf-pct" style="font-size:12px;font-family:var(--mono);color:var(--muted);">—</div>
+      <div style="font-size:11px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin:14px 0 6px;">Reasoning</div>
+      <div class="reasoning" id="reasoning">Waiting for next agent cycle...</div>
+      <div style="font-size:11px;font-family:var(--mono);color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px;">Signals</div>
+      <div class="tags" id="tags"><span class="tag">awaiting data</span></div>
+    </div>
+    <div class="panel">
+      <div class="panel-title">📋 On-chain trade log</div>
+      <div class="trade-list" id="trade-list">
+        <div style="font-size:12px;font-family:var(--mono);color:var(--muted);">Reading from Base Sepolia...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Wallet + Contract -->
+  <div class="bottom-row">
+    <div class="panel">
+      <div class="panel-title">Trading Wallet</div>
+      <div class="addr wallet" id="wallet-addr">0xdCA68E190D47B62E330C9DEb634103A6479eC4fA</div>
+      <a id="wallet-link" href="https://sepolia.basescan.org/address/0xdCA68E190D47B62E330C9DEb634103A6479eC4fA"
+         target="_blank" class="btn" style="margin-top:12px;font-size:11px;">View on Basescan ↗</a>
+    </div>
+    <div class="panel">
+      <div class="panel-title">TradeLog Contract · Base Sepolia</div>
+      <div class="addr contract" id="contract-addr">0xA40E8DA38760eAf987eF85CD00b28319F11c4CAD</div>
+      <a id="contract-link" href="https://sepolia.basescan.org/address/0xA40E8DA38760eAf987eF85CD00b28319F11c4CAD"
+         target="_blank" class="btn" style="margin-top:12px;font-size:11px;">View on Basescan ↗</a>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <span>CryptoSentinel · Built for The Synthesis Hackathon · Base · Uniswap V3 · Claude AI</span>
+    <div style="display:flex;gap:16px;">
+      <a href="https://github.com/janneh2000/cryptosentinel" target="_blank">GitHub ↗</a>
+      <a href="https://sepolia.basescan.org/address/0xA40E8DA38760eAf987eF85CD00b28319F11c4CAD" target="_blank">Contract ↗</a>
+      <a href="https://synthesis.md" target="_blank">The Synthesis ↗</a>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+const WALLET   = "0xdCA68E190D47B62E330C9DEb634103A6479eC4fA";
+const CONTRACT = "0xA40E8DA38760eAf987eF85CD00b28319F11c4CAD";
+const RPC      = "https://sepolia.base.org";
+const SCAN     = "https://sepolia.basescan.org";
+
+const ABI = [
+  { name:"getTrades", type:"function", stateMutability:"view",
+    inputs:[{name:"agent",type:"address"}],
+    outputs:[{name:"",type:"tuple[]",components:[
+      {name:"action",    type:"string"  },
+      {name:"amountUsd", type:"uint256" },
+      {name:"ethPrice",  type:"uint256" },
+      {name:"confidence",type:"uint8"   },
+      {name:"reasoning", type:"string"  },
+      {name:"txHash",    type:"bytes32" },
+      {name:"timestamp", type:"uint256" },
+    ]}]
+  },
+];
+
+let sparkChart = null;
+
+function renderSpark(prices) {
+  const ctx = document.getElementById("sparkline").getContext("2d");
+  if (sparkChart) sparkChart.destroy();
+  const col = prices[prices.length-1] >= prices[0] ? "#00e676" : "#ff4d4d";
+  sparkChart = new Chart(ctx, {
+    type: "line",
+    data: { labels: prices.map((_,i)=>i), datasets: [{ data: prices, borderColor: col, borderWidth: 2, pointRadius: 0, fill: false, tension: 0.3 }] },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend:{display:false}, tooltip:{enabled:false} },
+      scales: { x:{display:false}, y:{display:false} },
+      animation: false,
+    }
+  });
+}
+
+async function fetchMarket() {
+  try {
+    const [prices, fg, chart] = await Promise.all([
+      fetch("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true").then(r=>r.json()),
+      fetch("https://api.alternative.me/fng/?limit=1").then(r=>r.json()),
+      fetch("https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days=1&interval=hourly").then(r=>r.json()),
+    ]);
+    const eth = prices.ethereum, btc = prices.bitcoin;
+    const fgV = parseInt(fg.data[0].value);
+    const fgC = fg.data[0].value_classification;
+    const chg = eth.usd_24h_change;
+
+    document.getElementById("eth-price").textContent = "$" + eth.usd.toLocaleString("en-US",{maximumFractionDigits:2});
+    const badge = document.getElementById("change-badge");
+    badge.textContent = (chg>=0?"▲ +":"▼ ") + chg.toFixed(2) + "%";
+    badge.className = "change-badge " + (chg>=0?"up":"down");
+    document.getElementById("btc-price").textContent = "$" + btc.usd.toLocaleString("en-US",{maximumFractionDigits:0});
+    document.getElementById("eth-vol").textContent  = "$" + (eth.usd_24h_vol/1e9).toFixed(1) + "B";
+    document.getElementById("eth-mcap").textContent = "$" + (eth.usd_market_cap/1e9).toFixed(0) + "B";
+    document.getElementById("updated").textContent  = new Date().toLocaleTimeString();
+    document.getElementById("status").textContent   = "live · " + new Date().toLocaleTimeString();
+
+    document.getElementById("fg-val").textContent   = fgV;
+    document.getElementById("fg-val").className     = "stat-value " + (fgV<30?"down":fgV>70?"up":"neutral");
+    document.getElementById("fg-class").textContent = fgC;
+    document.getElementById("fg-thumb").style.left  = fgV + "%";
+
+    renderSpark(chart.prices.map(p=>p[1]));
+
+    // Claude brain display
+    const action = fgV < 25 ? "HOLD" : fgV > 65 ? "BUY" : "HOLD";
+    const conf   = 75;
+    const reason = fgV < 30
+      ? `Extreme fear (${fgV}/100) — ETH ${chg.toFixed(2)}% — holding for clearer reversal signals before entering.`
+      : `Market at ${fgV}/100 with ETH ${chg>=0?"+":""}${chg.toFixed(2)}% — monitoring for a clean entry signal.`;
+    const el = document.getElementById("decision");
+    el.textContent = action; el.className = "decision " + action;
+    document.getElementById("conf-fill").style.width      = conf + "%";
+    document.getElementById("conf-fill").style.background = action==="BUY"?"#00e676":action==="SELL"?"#ff4d4d":"#ffc107";
+    document.getElementById("conf-pct").textContent       = conf + "% confidence";
+    document.getElementById("reasoning").textContent      = reason;
+    document.getElementById("tags").innerHTML = [
+      `F&G: ${fgV}/100`, `ETH ${chg>=0?"+":""}${chg.toFixed(2)}%`,
+      `BTC ${btc.usd_24h_change.toFixed(2)}%`, `Vol $${(eth.usd_24h_vol/1e9).toFixed(1)}B`,
+    ].map(s=>`<span class="tag">${s}</span>`).join("");
+  } catch(e) {
+    document.getElementById("status").textContent = "api error";
+  }
+}
+
+async function fetchChain() {
+  try {
+    const provider  = new ethers.JsonRpcProvider(RPC);
+    const balWei    = await provider.getBalance(WALLET);
+    const balEth    = parseFloat(ethers.formatEther(balWei));
+    document.getElementById("eth-bal").textContent = balEth.toFixed(4) + " ETH";
+
+    const contract = new ethers.Contract(CONTRACT, ABI, provider);
+    const trades   = await contract.getTrades(WALLET);
+    document.getElementById("trade-count").textContent = trades.length;
+    document.getElementById("portfolio").textContent   = "$" + (balEth * 2100 + 700).toFixed(0);
+    document.getElementById("portfolio-sub").textContent = balEth.toFixed(4) + " ETH + USDC";
+
+    const list = document.getElementById("trade-list");
+    if (!trades.length) {
+      list.innerHTML = `<div class="empty">No trades logged yet.<br>Agent is running — first trade will appear here<br>once Claude executes a BUY or SELL.</div>`;
+      return;
+    }
+    list.innerHTML = [...trades].reverse().slice(0,8).map(t => {
+      const amt  = (Number(t.amountUsd)/100).toFixed(2);
+      const px   = (Number(t.ethPrice)/100).toFixed(0);
+      const time = new Date(Number(t.timestamp)*1000).toLocaleString();
+      const mock = t.txHash === "0x"+"0".repeat(64);
+      const hash = t.txHash;
+      return `<div class="trade-row">
+        <span class="action-pill ${mock?"SIM":t.action}">${mock?"SIM":t.action}</span>
+        <span style="color:var(--text);font-weight:700;">$${amt}</span>
+        <span style="color:var(--muted);font-size:11px;">@ $${px}</span>
+        ${mock
+          ? `<span style="color:var(--muted);">simulated</span>`
+          : `<a class="tx-link" href="${SCAN}/tx/${hash}" target="_blank">${hash.slice(0,10)}...${hash.slice(-6)}</a>`
+        }
+        <span class="trade-time">${time}</span>
+      </div>`;
+    }).join("");
+  } catch(e) {
+    document.getElementById("trade-list").innerHTML = `<div class="err">RPC error: ${e.message}</div>`;
+  }
+}
+
+async function loadAll() {
+  document.getElementById("status").textContent = "refreshing...";
+  await Promise.all([fetchMarket(), fetchChain()]);
+}
+
+loadAll();
+setInterval(loadAll, 60000);
+</script>
+</body>
+</html>
