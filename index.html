@@ -268,6 +268,14 @@
     </div>
   </div>
 
+  <!-- Trending Base Tokens -->
+  <div class="panel" style="margin-bottom:20px;">
+    <div class="panel-title">&#128269; Trending on Base &#8212; altcoin scanner</div>
+    <div id="token-list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;">
+      <div style="font-size:12px;font-family:var(--mono);color:var(--muted);">Scanning DexScreener...</div>
+    </div>
+  </div>
+
   <!-- Footer -->
   <footer class="footer">
     <span>CryptoSentinel · Built for The Synthesis Hackathon · Base · Uniswap V3 · Claude AI</span>
@@ -438,8 +446,83 @@ async function loadAll() {
   await Promise.all([fetchMarket(), fetchChain()]);
 }
 
+
+async function fetchTokens() {
+  try {
+    const res = await fetch("https://api.dexscreener.com/latest/dex/search?q=base&chainId=base");
+    const data = await res.json();
+    const pairs = (data.pairs || []).filter(p =>
+      p.chainId === "base" &&
+      parseFloat(p.liquidity?.usd || 0) > 50000 &&
+      parseFloat(p.volume?.h24    || 0) > 10000
+    );
+    const BLACKLIST = new Set([
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "0x4200000000000000000000000000000000000006",
+    ]);
+    const seen = new Set();
+    const tokens = pairs
+      .filter(p => {
+        const addr = (p.baseToken?.address || "").toLowerCase();
+        if (BLACKLIST.has(addr) || seen.has(addr)) return false;
+        seen.add(addr); return true;
+      })
+      .map(p => ({
+        symbol:  p.baseToken?.symbol  || "?",
+        name:    p.baseToken?.name    || "?",
+        price:   parseFloat(p.priceUsd     || 0),
+        h1:      parseFloat(p.priceChange?.h1  || 0),
+        h24:     parseFloat(p.priceChange?.h24 || 0),
+        vol:     parseFloat(p.volume?.h24      || 0),
+        liq:     parseFloat(p.liquidity?.usd   || 0),
+        txns:    (p.txns?.h24?.buys||0)+(p.txns?.h24?.sells||0),
+        addr:    p.baseToken?.address || "",
+        pair:    p.pairAddress || "",
+        dex:     p.dexId || "",
+      }))
+      .sort((a,b) => b.vol - a.vol)
+      .slice(0, 9);
+
+    const list = document.getElementById("token-list");
+    if (!tokens.length) {
+      list.innerHTML = '<div style="font-size:12px;font-family:var(--mono);color:var(--muted);">No trending tokens found right now.</div>';
+      return;
+    }
+    list.innerHTML = tokens.map(t => {
+      const chgColor = t.h24 >= 0 ? "var(--green)" : "var(--red)";
+      const h1Color  = t.h1  >= 0 ? "var(--green)" : "var(--red)";
+      const scanUrl  = "https://dexscreener.com/base/" + t.pair;
+      return `<div style="background:#0f1115;border:1px solid var(--border);border-radius:10px;padding:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+          <div>
+            <span style="font-weight:700;font-family:var(--mono);font-size:14px;color:var(--text);">${t.symbol}</span>
+            <span style="font-size:11px;color:var(--muted);margin-left:6px;">${t.name.slice(0,18)}</span>
+          </div>
+          <a href="${scanUrl}" target="_blank" style="font-size:10px;font-family:var(--mono);color:var(--muted);">chart ↗</a>
+        </div>
+        <div style="font-size:16px;font-weight:700;font-family:var(--mono);color:var(--text);margin-bottom:6px;">$${t.price < 0.001 ? t.price.toFixed(8) : t.price.toFixed(4)}</div>
+        <div style="display:flex;gap:10px;font-size:11px;font-family:var(--mono);margin-bottom:8px;">
+          <span style="color:${h1Color};">${t.h1>=0?"+":""}${t.h1.toFixed(1)}% 1h</span>
+          <span style="color:${chgColor};">${t.h24>=0?"+":""}${t.h24.toFixed(1)}% 24h</span>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:10px;font-family:var(--mono);color:var(--muted);">vol $${(t.vol/1000).toFixed(0)}k</span>
+          <span style="font-size:10px;font-family:var(--mono);color:var(--muted);">liq $${(t.liq/1000).toFixed(0)}k</span>
+          <span style="font-size:10px;font-family:var(--mono);color:var(--muted);">${t.txns} txns</span>
+          <span style="font-size:10px;font-family:var(--mono);color:var(--muted);">${t.dex}</span>
+        </div>
+      </div>`;
+    }).join("");
+  } catch(e) {
+    document.getElementById("token-list").innerHTML =
+      '<div style="font-size:11px;font-family:var(--mono);color:var(--muted);">Token scan unavailable (CORS) — running in agent only.</div>';
+  }
+}
+
 loadAll();
+fetchTokens();
 setInterval(loadAll, 60000);
+setInterval(fetchTokens, 5 * 60 * 1000);
 </script>
 </body>
 </html>

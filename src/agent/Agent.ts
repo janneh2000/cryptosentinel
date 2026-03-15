@@ -1,4 +1,5 @@
 import { MarketWatcher, MarketSnapshot } from "../market/MarketWatcher";
+import { TokenScanner, TokenCandidate } from "../market/TokenScanner";
 import { ClaudeBrain, TradeDecision } from "../brain/ClaudeBrain";
 import { RiskGuard } from "../risk/RiskGuard";
 import { Executor } from "../executor/Executor";
@@ -9,6 +10,7 @@ import { logger } from "../utils/logger";
 
 export class CryptoSentinelAgent {
   private marketWatcher:  MarketWatcher;
+  private tokenScanner:   TokenScanner;
   private brain:          ClaudeBrain;
   private riskGuard:      RiskGuard;
   private executor:       Executor;
@@ -18,27 +20,26 @@ export class CryptoSentinelAgent {
   private running:        boolean = false;
   private pollInterval:   number;
   private timer?:         NodeJS.Timeout;
-  private lastSnapshot?:  MarketSnapshot;
+  private cycleCount:     number = 0;
 
   constructor() {
-    this.pollInterval  = parseInt(process.env.POLL_INTERVAL_MS || "60000");
-    this.marketWatcher = new MarketWatcher();
-    this.brain         = new ClaudeBrain();
-    this.riskGuard     = new RiskGuard();
-    this.executor      = new Executor();
-    this.portfolio     = new Portfolio();
-    this.telegram      = new TelegramNotifier();
-    this.tradeLog      = new OnChainTradeLog();
+    this.pollInterval   = parseInt(process.env.POLL_INTERVAL_MS || "60000");
+    this.marketWatcher  = new MarketWatcher();
+    this.tokenScanner   = new TokenScanner();
+    this.brain          = new ClaudeBrain();
+    this.riskGuard      = new RiskGuard();
+    this.executor       = new Executor();
+    this.portfolio      = new Portfolio();
+    this.telegram       = new TelegramNotifier();
+    this.tradeLog       = new OnChainTradeLog();
   }
 
   async start(): Promise<void> {
     this.running = true;
     const walletAddress = await this.executor.getWalletAddress();
     logger.info(`📡 Agent loop starting — polling every ${this.pollInterval / 1000}s`);
-
-    // Notify startup
+    logger.info(`🔍 Token scanner enabled — Base ecosystem altcoins + memecoins`);
     await this.telegram.notifyStartup(walletAddress);
-
     await this.tick();
     this.timer = setInterval(async () => {
       if (this.running) await this.tick();
@@ -52,55 +53,68 @@ export class CryptoSentinelAgent {
   }
 
   private async tick(): Promise<void> {
+    this.cycleCount++;
     try {
       logger.info("─────────────────────────────────────");
-      logger.info("🔄 New agent cycle starting...");
+      logger.info(`🔄 Cycle #${this.cycleCount} starting...`);
 
       // 1. Market data
       logger.info("📊 Fetching market snapshot...");
       const snapshot: MarketSnapshot = await this.marketWatcher.getSnapshot();
-      this.lastSnapshot = snapshot;
       logger.info(`   ETH: $${snapshot.ethPrice.toFixed(2)} | 24h: ${snapshot.ethChange24h.toFixed(2)}% | F&G: ${snapshot.fearGreedIndex ?? "?"}/100`);
 
-      // 2. Portfolio
-      const walletAddress = await this.executor.getWalletAddress();
+      // 2. Token scan — run every cycle (results cached 5 mins internally)
+      logger.info("🔍 Scanning Base ecosystem tokens...");
+      let topTokens: TokenCandidate[] = [];
+      try {
+        topTokens = await this.tokenScanner.scan();
+        if (topTokens.length > 0) {
+          logger.info(`   Top pick: ${topTokens[0].symbol} (score: ${topTokens[0].score})`);
+        }
+      } catch (e: any) {
+        logger.warn(`   Token scan skipped: ${e.message}`);
+      }
+
+      // 3. Portfolio
+      const walletAddress  = await this.executor.getWalletAddress();
       const portfolioState = await this.portfolio.getState(walletAddress);
       logger.info(`   Portfolio: $${portfolioState.totalValueUsd.toFixed(2)} | ETH: ${portfolioState.ethBalance.toFixed(4)} | USDC: $${portfolioState.usdcBalance.toFixed(2)}`);
 
-      // 3. Claude reasoning — pass live ETH price
-      logger.info("🧠 Claude is analyzing the market...");
-      const decision: TradeDecision = await this.brain.analyze(snapshot, portfolioState);
-      logger.info(`   Decision: ${decision.action} | Confidence: ${decision.confidence}%`);
+      // 4. Claude reasoning — passes both market + top tokens
+      logger.info("🧠 Claude is analyzing market + Base tokens...");
+      const decision: TradeDecision = await this.brain.analyze(snapshot, portfolioState, topTokens);
+      logger.info(`   Decision: ${decision.action} ${decision.asset} | Confidence: ${decision.confidence}%`);
       logger.info(`   Reasoning: ${decision.reasoning}`);
-      if (decision.signals?.length) {
-        logger.info(`   Signals: ${decision.signals.join(", ")}`);
-      }
+      if (decision.signals?.length) logger.info(`   Signals: ${decision.signals.join(", ")}`);
 
-      // 4. Risk check
+      // 5. Risk check
       logger.info("🛡️  Running risk checks...");
       const approved = this.riskGuard.approve(decision, portfolioState);
-
       if (!approved.ok) {
         logger.warn(`   ⚠️  Risk guard blocked: ${approved.reason}`);
         return;
       }
 
-      // 5. Hold path
+      // 6. Hold path
       if (decision.action === "HOLD") {
         logger.info("   ✋ Holding — no trade this cycle.");
         await this.telegram.notifyHold(decision, snapshot);
         return;
       }
 
-      // 6. Execute trade
-      logger.info(`   ✅ Executing ${decision.action} via Uniswap V3...`);
-      const receipt = await this.executor.execute({ ...decision, ethPrice: snapshot.ethPrice } as any);
+      // 7. Execute
+      const label = decision.isAltcoin ? `${decision.asset} (altcoin)` : decision.asset;
+      logger.info(`   ✅ Executing ${decision.action} ${label} via Uniswap V3...`);
+      const receipt = await this.executor.execute({
+        ...decision,
+        ethPrice: snapshot.ethPrice,
+      } as any);
       logger.info(`   🎉 Trade done! TX: ${receipt.txHash}`);
 
-      // 7. Telegram notification
+      // 8. Notifications
       await this.telegram.notifyTradeExecuted(receipt, decision, snapshot);
 
-      // 8. On-chain trade log
+      // 9. On-chain log
       const logTx = await this.tradeLog.log(receipt, decision, snapshot.ethPrice);
       if (logTx) logger.info(`   📋 Logged on-chain: ${logTx}`);
 
