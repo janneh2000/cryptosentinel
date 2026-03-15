@@ -329,10 +329,16 @@ function renderSpark(prices) {
 
 async function fetchMarket() {
   try {
+    // Use timeout + retry for CoinGecko rate limits
+    const fetchWithTimeout = (url, ms=8000) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), ms);
+      return fetch(url, { signal: controller.signal });
+    };
     const [prices, fg, chart] = await Promise.all([
-      fetch("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true").then(r=>r.json()),
-      fetch("https://api.alternative.me/fng/?limit=1").then(r=>r.json()),
-      fetch("https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days=1&interval=hourly").then(r=>r.json()),
+      fetchWithTimeout("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true").then(r=>{ if(!r.ok) throw new Error("rate limited"); return r.json(); }),
+      fetchWithTimeout("https://api.alternative.me/fng/?limit=1").then(r=>r.json()),
+      fetchWithTimeout("https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days=1&interval=hourly").then(r=>{ if(!r.ok) throw new Error("rate limited"); return r.json(); }),
     ]);
     const eth = prices.ethereum, btc = prices.bitcoin;
     const fgV = parseInt(fg.data[0].value);
@@ -449,12 +455,20 @@ async function loadAll() {
 
 async function fetchTokens() {
   try {
-    const res = await fetch("https://api.dexscreener.com/latest/dex/search?q=base&chainId=base");
+    // Fetch known Base tokens by address (most reliable)
+    const knownAddrs = [
+      "0x532f27101965dd16442E59d40670FaF5eBB142E4",
+      "0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4",
+      "0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed",
+      "0x940181a94A35A4569E4529A3CDfB74e38FD98631",
+      "0x0578d8A44db98B23BF096A382e016e29a5Ce0ffe",
+    ].join(",");
+    const res  = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${knownAddrs}`);
     const data = await res.json();
     const pairs = (data.pairs || []).filter(p =>
       p.chainId === "base" &&
-      parseFloat(p.liquidity?.usd || 0) > 50000 &&
-      parseFloat(p.volume?.h24    || 0) > 10000
+      parseFloat(p.liquidity?.usd || 0) > 30000 &&
+      parseFloat(p.volume?.h24    || 0) > 5000
     );
     const BLACKLIST = new Set([
       "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
