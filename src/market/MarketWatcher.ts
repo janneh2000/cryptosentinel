@@ -13,8 +13,6 @@ export interface MarketSnapshot {
   gasPrice?: string;
 }
 
-const COINGECKO_URL = "https://api.coingecko.com/api/v3";
-
 export class MarketWatcher {
   async getSnapshot(): Promise<MarketSnapshot> {
     const [prices, fearGreed] = await Promise.allSettled([
@@ -22,57 +20,59 @@ export class MarketWatcher {
       this.fetchFearGreed(),
     ]);
 
-    const priceData = prices.status === "fulfilled" ? prices.value : null;
-
-    if (!priceData) {
-      throw new Error("Failed to fetch price data from CoinGecko");
+    if (prices.status === "rejected") {
+      throw new Error(`Failed to fetch prices: ${prices.reason}`);
     }
 
     return {
-      timestamp: Date.now(),
-      ethPrice: priceData.ethereum.usd,
-      ethChange24h: priceData.ethereum.usd_24h_change,
-      ethVolume24h: priceData.ethereum.usd_24h_vol,
-      ethMarketCap: priceData.ethereum.usd_market_cap,
-      btcPrice: priceData.bitcoin.usd,
-      btcChange24h: priceData.bitcoin.usd_24h_change,
-      fearGreedIndex:
-        fearGreed.status === "fulfilled"
-          ? fearGreed.value
-          : undefined,
+      timestamp:    Date.now(),
+      ...prices.value,
+      fearGreedIndex: fearGreed.status === "fulfilled" ? fearGreed.value : undefined,
     };
   }
 
   private async fetchPrices() {
-    const response = await axios.get(`${COINGECKO_URL}/simple/price`, {
-      params: {
-        ids: "ethereum,bitcoin",
-        vs_currencies: "usd",
-        include_24hr_change: true,
-        include_24hr_vol: true,
-        include_market_cap: true,
-      },
-    });
-    return response.data;
+    // Primary: Binance public API — no key, generous rate limits
+    try {
+      const res = await axios.get(
+        "https://api.binance.com/api/v3/ticker/24hr?symbols=%5B%22ETHUSDT%22,%22BTCUSDT%22%5D",
+        { timeout: 8000 }
+      );
+      const eth = res.data.find((t: any) => t.symbol === "ETHUSDT");
+      const btc = res.data.find((t: any) => t.symbol === "BTCUSDT");
+      if (!eth || !btc) throw new Error("Binance symbol not found");
+
+      return {
+        ethPrice:     parseFloat(eth.lastPrice),
+        ethChange24h: parseFloat(eth.priceChangePercent),
+        ethVolume24h: parseFloat(eth.quoteVolume),
+        ethMarketCap: 0, // not available from Binance ticker
+        btcPrice:     parseFloat(btc.lastPrice),
+        btcChange24h: parseFloat(btc.priceChangePercent),
+      };
+    } catch (binanceErr: any) {
+      logger.warn(`Binance API failed (${binanceErr.message}), falling back to CoinGecko...`);
+    }
+
+    // Fallback: CoinGecko free tier
+    const res = await axios.get(
+      "https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true",
+      { timeout: 10000 }
+    );
+    const e = res.data.ethereum;
+    const b = res.data.bitcoin;
+    return {
+      ethPrice:     e.usd,
+      ethChange24h: e.usd_24h_change,
+      ethVolume24h: e.usd_24h_vol,
+      ethMarketCap: e.usd_market_cap,
+      btcPrice:     b.usd,
+      btcChange24h: b.usd_24h_change,
+    };
   }
 
   private async fetchFearGreed(): Promise<number> {
-    // Alternative Fear & Greed API (free, no key needed)
-    const response = await axios.get("https://api.alternative.me/fng/?limit=1");
-    return parseInt(response.data.data[0].value);
-  }
-
-  // Format snapshot as a readable string for Claude
-  snapshotToText(snapshot: MarketSnapshot): string {
-    return `
-MARKET SNAPSHOT (${new Date(snapshot.timestamp).toISOString()})
-─────────────────────────────────────
-ETH Price:    $${snapshot.ethPrice.toFixed(2)}
-ETH 24h:      ${snapshot.ethChange24h.toFixed(2)}%
-ETH Volume:   $${(snapshot.ethVolume24h / 1e9).toFixed(2)}B
-BTC Price:    $${snapshot.btcPrice.toFixed(2)}
-BTC 24h:      ${snapshot.btcChange24h.toFixed(2)}%
-Fear & Greed: ${snapshot.fearGreedIndex ?? "N/A"} / 100
-    `.trim();
+    const res = await axios.get("https://api.alternative.me/fng/?limit=1", { timeout: 5000 });
+    return parseInt(res.data.data[0].value);
   }
 }

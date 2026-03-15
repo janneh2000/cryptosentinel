@@ -329,45 +329,50 @@ function renderSpark(prices) {
 
 async function fetchMarket() {
   try {
-    // Use timeout + retry for CoinGecko rate limits
-    const fetchWithTimeout = (url, ms=8000) => {
-      const controller = new AbortController();
-      setTimeout(() => controller.abort(), ms);
-      return fetch(url, { signal: controller.signal });
-    };
-    const [prices, fg, chart] = await Promise.all([
-      fetchWithTimeout("https://api.coingecko.com/api/v3/simple/price?ids=ethereum,bitcoin&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true").then(r=>{ if(!r.ok) throw new Error("rate limited"); return r.json(); }),
-      fetchWithTimeout("https://api.alternative.me/fng/?limit=1").then(r=>r.json()),
-      fetchWithTimeout("https://api.coingecko.com/api/v3/coins/ethereum/market_chart?vs_currency=usd&days=1&interval=hourly").then(r=>{ if(!r.ok) throw new Error("rate limited"); return r.json(); }),
+    // Primary: Binance public API (no key, no rate limit)
+    const [binance, fg] = await Promise.all([
+      fetch("https://api.binance.com/api/v3/ticker/24hr?symbols=%5B%22ETHUSDT%22,%22BTCUSDT%22%5D").then(r=>r.json()),
+      fetch("https://api.alternative.me/fng/?limit=1").then(r=>r.json()),
     ]);
-    const eth = prices.ethereum, btc = prices.bitcoin;
-    const fgV = parseInt(fg.data[0].value);
-    const fgC = fg.data[0].value_classification;
-    const chg = eth.usd_24h_change;
 
-    document.getElementById("eth-price").textContent = "$" + eth.usd.toLocaleString("en-US",{maximumFractionDigits:2});
+    const eth = binance.find(b => b.symbol === "ETHUSDT");
+    const btc = binance.find(b => b.symbol === "BTCUSDT");
+    if (!eth || !btc) throw new Error("Binance parse failed");
+
+    const ethPrice = parseFloat(eth.lastPrice);
+    const ethChg   = parseFloat(eth.priceChangePercent);
+    const btcPrice = parseFloat(btc.lastPrice);
+    const ethVol   = parseFloat(eth.quoteVolume); // in USDT
+    const fgV      = parseInt(fg.data[0].value);
+    const fgC      = fg.data[0].value_classification;
+
+    document.getElementById("eth-price").textContent = "$" + ethPrice.toLocaleString("en-US",{maximumFractionDigits:2});
     const badge = document.getElementById("change-badge");
-    badge.textContent = (chg>=0?"▲ +":"▼ ") + chg.toFixed(2) + "%";
-    badge.className = "change-badge " + (chg>=0?"up":"down");
-    document.getElementById("btc-price").textContent = "$" + btc.usd.toLocaleString("en-US",{maximumFractionDigits:0});
-    document.getElementById("eth-vol").textContent  = "$" + (eth.usd_24h_vol/1e9).toFixed(1) + "B";
-    document.getElementById("eth-mcap").textContent = "$" + (eth.usd_market_cap/1e9).toFixed(0) + "B";
-    document.getElementById("updated").textContent  = new Date().toLocaleTimeString();
-    document.getElementById("status").textContent   = "live · " + new Date().toLocaleTimeString();
+    badge.textContent = (ethChg>=0?"▲ +":"▼ ") + ethChg.toFixed(2) + "%";
+    badge.className   = "change-badge " + (ethChg>=0?"up":"down");
+    document.getElementById("btc-price").textContent = "$" + btcPrice.toLocaleString("en-US",{maximumFractionDigits:0});
+    document.getElementById("eth-vol").textContent   = "$" + (ethVol/1e9).toFixed(1) + "B";
+    document.getElementById("eth-mcap").textContent  = "N/A";
+    document.getElementById("updated").textContent   = new Date().toLocaleTimeString();
+    document.getElementById("status").textContent    = "live · " + new Date().toLocaleTimeString();
 
-    document.getElementById("fg-val").textContent   = fgV;
-    document.getElementById("fg-val").className     = "stat-value " + (fgV<30?"down":fgV>70?"up":"neutral");
-    document.getElementById("fg-class").textContent = fgC;
-    document.getElementById("fg-thumb").style.left  = fgV + "%";
+    document.getElementById("fg-val").textContent    = fgV;
+    document.getElementById("fg-val").className      = "stat-value " + (fgV<30?"down":fgV>70?"up":"neutral");
+    document.getElementById("fg-class").textContent  = fgC;
+    document.getElementById("fg-thumb").style.left   = fgV + "%";
 
-    renderSpark(chart.prices.map(p=>p[1]));
+    // Sparkline from Binance klines (last 24 hourly candles)
+    try {
+      const klines = await fetch("https://api.binance.com/api/v3/klines?symbol=ETHUSDT&interval=1h&limit=24").then(r=>r.json());
+      renderSpark(klines.map(k => parseFloat(k[4]))); // close prices
+    } catch(_) {}
 
-    // Claude brain display
+    // Brain display
     const action = fgV < 25 ? "HOLD" : fgV > 65 ? "BUY" : "HOLD";
     const conf   = 75;
     const reason = fgV < 30
-      ? `Extreme fear (${fgV}/100) — ETH ${chg.toFixed(2)}% — holding for clearer reversal signals before entering.`
-      : `Market at ${fgV}/100 with ETH ${chg>=0?"+":""}${chg.toFixed(2)}% — monitoring for a clean entry signal.`;
+      ? `Extreme fear (${fgV}/100) — ETH ${ethChg>=0?"+":""}${ethChg.toFixed(2)}% — holding for clearer reversal signals.`
+      : `Market at ${fgV}/100, ETH ${ethChg>=0?"+":""}${ethChg.toFixed(2)}% — monitoring for entry signal.`;
     const el = document.getElementById("decision");
     el.textContent = action; el.className = "decision " + action;
     document.getElementById("conf-fill").style.width      = conf + "%";
@@ -375,11 +380,14 @@ async function fetchMarket() {
     document.getElementById("conf-pct").textContent       = conf + "% confidence";
     document.getElementById("reasoning").textContent      = reason;
     document.getElementById("tags").innerHTML = [
-      `F&G: ${fgV}/100`, `ETH ${chg>=0?"+":""}${chg.toFixed(2)}%`,
-      `BTC ${btc.usd_24h_change.toFixed(2)}%`, `Vol $${(eth.usd_24h_vol/1e9).toFixed(1)}B`,
+      `F&G: ${fgV}/100`,
+      `ETH ${ethChg>=0?"+":""}${ethChg.toFixed(2)}%`,
+      `BTC ${parseFloat(btc.priceChangePercent).toFixed(2)}%`,
+      `Vol $${(ethVol/1e9).toFixed(1)}B`,
     ].map(s=>`<span class="tag">${s}</span>`).join("");
   } catch(e) {
-    document.getElementById("status").textContent = "api error";
+    document.getElementById("status").textContent = "api error: " + e.message.slice(0,30);
+    console.error("fetchMarket error:", e);
   }
 }
 
@@ -444,6 +452,133 @@ async function fetchChain() {
 
   } catch(e) {
     list.innerHTML = `<div class="err">Connection error — check RPC: ${e.message.slice(0,80)}</div>`;
+  }
+}
+
+async function loadAll() {
+  document.getElementById("status").textContent = "refreshing...";
+  await Promise.all([fetchMarket(), fetchChain()]);
+}
+
+
+async function fetchTokens() {
+  const list = document.getElementById("token-list");
+  try {
+    // Hit multiple DexScreener queries for broad Base coverage
+    const queries = [
+      "https://api.dexscreener.com/latest/dex/search?q=base+meme",
+      "https://api.dexscreener.com/latest/dex/search?q=base+new",
+      "https://api.dexscreener.com/latest/dex/tokens/0x532f27101965dd16442E59d40670FaF5eBB142E4,0xAC1Bd2486aAf3B5C0fc3Fd868558b082a531B2B4,0x4ed4E862860beD51a9570b96d89aF5E1B0Efefed,0x940181a94A35A4569E4529A3CDfB74e38FD98631,0x0578d8A44db98B23BF096A382e016e29a5Ce0ffe,0xCfA3Ef56d303AE4fAabA0592388F19d7C3399FB4",
+    ];
+
+    const BLACKLIST = new Set([
+      "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913", // USDC
+      "0x4200000000000000000000000000000000000006", // WETH
+      "0x50c5725949a6f0c72e6c4a641f24049a917db0cb", // DAI
+    ]);
+
+    const results = await Promise.allSettled(queries.map(url =>
+      fetch(url).then(r => r.json()).then(d => d.pairs || [])
+    ));
+
+    const allPairs = [];
+    for (const r of results) {
+      if (r.status === "fulfilled") allPairs.push(...r.value);
+    }
+
+    // Filter: Base only, min liquidity, min volume, deduplicate
+    const seen = new Set();
+    const tokens = allPairs
+      .filter(p => {
+        if (p?.chainId !== "base") return false;
+        const addr = (p.baseToken?.address || "").toLowerCase();
+        if (BLACKLIST.has(addr)) return false;
+        if (seen.has(addr)) return false;
+        if (parseFloat(p.liquidity?.usd || 0) < 20000) return false;
+        if (parseFloat(p.volume?.h24    || 0) < 3000)  return false;
+        if (parseFloat(p.priceUsd       || 0) <= 0)    return false;
+        seen.add(addr);
+        return true;
+      })
+      .map(p => {
+        const vol  = parseFloat(p.volume?.h24      || 0);
+        const liq  = parseFloat(p.liquidity?.usd   || 0);
+        const h1   = parseFloat(p.priceChange?.h1  || 0);
+        const h24  = parseFloat(p.priceChange?.h24 || 0);
+        const txns = (p.txns?.h24?.buys||0)+(p.txns?.h24?.sells||0);
+        // Score: vol + momentum + liquidity
+        let score = 0;
+        if (vol > 1000000) score += 30;
+        else if (vol > 500000) score += 20;
+        else if (vol > 100000) score += 10;
+        else if (vol > 20000)  score += 5;
+        if (h1  > 10) score += 25;
+        else if (h1 > 5) score += 15;
+        else if (h1 > 2) score += 8;
+        if (h24 > 20) score += 20;
+        else if (h24 > 10) score += 12;
+        else if (h24 > 5)  score += 6;
+        if (liq > 500000) score += 15;
+        else if (liq > 200000) score += 10;
+        else if (liq > 50000)  score += 5;
+        if (txns > 5000) score += 10;
+        else if (txns > 1000) score += 6;
+        else if (txns > 200)  score += 3;
+        if (h24 < -20) score -= 15;
+        return {
+          symbol: p.baseToken?.symbol || "?",
+          name:   p.baseToken?.name   || "?",
+          price:  parseFloat(p.priceUsd || 0),
+          h1, h24, vol, liq, txns,
+          score: Math.max(0, score),
+          pair:  p.pairAddress || "",
+          dex:   p.dexId       || "",
+          addr:  p.baseToken?.address || "",
+        };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 12);
+
+    if (!tokens.length) {
+      list.innerHTML = '<div style="font-size:12px;font-family:var(--mono);color:var(--muted);padding:16px;">No qualifying tokens found right now — scanner updates every 5min.</div>';
+      return;
+    }
+
+    list.innerHTML = tokens.map(t => {
+      const h1Col  = t.h1  >= 0 ? "var(--green)" : "var(--red)";
+      const h24Col = t.h24 >= 0 ? "var(--green)" : "var(--red)";
+      const scoreCol = t.score >= 50 ? "var(--green)" : t.score >= 30 ? "var(--amber)" : "var(--muted)";
+      const scanUrl  = "https://dexscreener.com/base/" + t.pair;
+      const fmtPrice = t.price < 0.000001 ? t.price.toExponential(2) :
+                       t.price < 0.001    ? t.price.toFixed(8) :
+                       t.price < 1        ? t.price.toFixed(6) :
+                       t.price < 1000     ? t.price.toFixed(4) : t.price.toFixed(2);
+      return `<div style="background:#0f1115;border:1px solid var(--border);border-radius:10px;padding:14px 16px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;">
+          <div>
+            <span style="font-weight:700;font-family:var(--mono);font-size:14px;color:var(--text);">${t.symbol}</span>
+            <span style="font-size:10px;color:var(--muted);margin-left:6px;">${t.name.slice(0,14)}</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <span style="font-size:10px;font-family:var(--mono);color:${scoreCol};border:1px solid ${scoreCol};padding:1px 6px;border-radius:4px;">${t.score}pts</span>
+            <a href="${scanUrl}" target="_blank" style="font-size:10px;font-family:var(--mono);color:var(--muted);">chart↗</a>
+          </div>
+        </div>
+        <div style="font-size:18px;font-weight:700;font-family:var(--mono);color:var(--text);margin-bottom:8px;">$${fmtPrice}</div>
+        <div style="display:flex;gap:12px;font-size:11px;font-family:var(--mono);margin-bottom:8px;">
+          <span style="color:${h1Col};">${t.h1>=0?"+":""}${t.h1.toFixed(1)}% 1h</span>
+          <span style="color:${h24Col};">${t.h24>=0?"+":""}${t.h24.toFixed(1)}% 24h</span>
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <span style="font-size:10px;font-family:var(--mono);background:#1a1d23;padding:2px 7px;border-radius:4px;color:var(--muted);">vol $${t.vol>=1e6?(t.vol/1e6).toFixed(1)+"M":(t.vol/1e3).toFixed(0)+"k"}</span>
+          <span style="font-size:10px;font-family:var(--mono);background:#1a1d23;padding:2px 7px;border-radius:4px;color:var(--muted);">liq $${t.liq>=1e6?(t.liq/1e6).toFixed(1)+"M":(t.liq/1e3).toFixed(0)+"k"}</span>
+          <span style="font-size:10px;font-family:var(--mono);background:#1a1d23;padding:2px 7px;border-radius:4px;color:var(--muted);">${t.txns} txns</span>
+          <span style="font-size:10px;font-family:var(--mono);background:#1a1d23;padding:2px 7px;border-radius:4px;color:var(--muted);">${t.dex}</span>
+        </div>
+      </div>`;
+    }).join("");
+  } catch(e) {
+    list.innerHTML = `<div style="font-size:11px;font-family:var(--mono);color:var(--muted);padding:12px;">Token scan unavailable: ${e.message.slice(0,50)}</div>`;
   }
 }
 
