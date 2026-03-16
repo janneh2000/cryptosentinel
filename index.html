@@ -412,68 +412,72 @@ async function fetchMarket() {
 async function fetchChain() {
   const list = document.getElementById("trade-list");
 
-  const rpc = async (method, params) => {
+  // ETH Balance via direct RPC
+  try {
     const r = await Promise.race([
       fetch(RPC, {method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({jsonrpc:"2.0", id:1, method, params})
-      }).then(r => r.json()),
-      new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 8000))
+        body:JSON.stringify({jsonrpc:"2.0",id:1,method:"eth_getBalance",params:[WALLET,"latest"]})
+      }).then(r=>r.json()),
+      new Promise((_,rej)=>setTimeout(()=>rej(),6000))
     ]);
-    return r.result;
-  };
-
-  // ETH Balance
-  try {
-    const hex = await rpc("eth_getBalance", [WALLET, "latest"]);
-    if (hex) {
-      const bal = parseInt(hex,16)/1e18;
+    if (r.result) {
+      const bal = parseInt(r.result,16)/1e18;
       document.getElementById("eth-bal").textContent       = bal.toFixed(4)+" ETH";
       document.getElementById("portfolio").textContent     = "$"+(bal*2100+700).toFixed(0);
       document.getElementById("portfolio-sub").textContent = bal.toFixed(4)+" ETH + USDC";
     }
   } catch(_){}
 
-  // Get current block, scan last 50k blocks only
+  // Trade log via Basescan API (no block range limit, no API key needed for basic queries)
   try {
     list.innerHTML = `<div style="font-size:11px;font-family:var(--mono);color:var(--muted);padding:8px;">Loading trades...</div>`;
 
-    const latestHex  = await rpc("eth_blockNumber", []);
-    const latest     = parseInt(latestHex, 16);
-    const fromBlock  = "0x" + Math.max(0, latest - 50000).toString(16);
-    console.log("Scanning blocks", Math.max(0, latest-50000), "to", latest);
+    // Basescan getLogs API - no block range restriction, no API key needed
+    const url = `https://api-sepolia.basescan.org/api?module=logs&action=getLogs` +
+      `&address=${CONTRACT}&fromBlock=0&toBlock=latest&page=1&offset=20`;
 
-    const logsRes = await Promise.race([
-      fetch(RPC, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({
-          jsonrpc:"2.0", id:2, method:"eth_getLogs",
-          params:[{ address: CONTRACT, fromBlock, toBlock: latestHex }]
-        })
-      }).then(r=>r.json()),
-      new Promise((_,rej) => setTimeout(()=>rej(new Error("logs timeout")), 12000))
+    const res = await Promise.race([
+      fetch(url).then(r=>r.json()),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),12000))
     ]);
 
-    const logs = logsRes.result || [];
-    console.log("Logs found:", logs.length, logsRes.error?.message || "");
+    console.log("Basescan logs status:", res.status, "count:", (res.result||[]).length);
 
+    const logs = Array.isArray(res.result) ? res.result : [];
+    document.getElementById("trade-count").textContent = logs.length || "—";
+
+    if (!logs.length) {
+      list.innerHTML = `<div class="empty">
+        No trades found yet.<br><br>
+        <a href="${SCAN}/address/${CONTRACT}#events" target="_blank"
+           style="color:var(--blue);text-decoration:underline;font-family:var(--mono);font-size:12px;">
+          View contract events on Basescan ↗
+        </a>
+      </div>`;
+      return;
+    }
+
+    // Decode with ethers Interface
     const iface = new ethers.Interface([
       "event TradeLogged(address indexed agent, string action, uint256 amountUsd, uint256 ethPrice, uint8 confidence, string reasoning, bytes32 txHash, uint256 timestamp)"
     ]);
 
     const parsed = logs.map(log => {
-      try { return iface.parseLog({topics: log.topics, data: log.data}); }
-      catch(_) { return null; }
+      try {
+        return iface.parseLog({
+          topics: log.topics,
+          data:   log.data
+        });
+      } catch(e) { console.warn("parse fail:", e.message); return null; }
     }).filter(Boolean);
 
-    console.log("Parsed events:", parsed.length);
-    document.getElementById("trade-count").textContent = parsed.length || "—";
+    console.log("Parsed:", parsed.length);
+    document.getElementById("trade-count").textContent = logs.length;
 
     if (!parsed.length) {
       list.innerHTML = `<div class="empty">
-        No trades in recent blocks.<br><br>
-        <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">
-          View full history on Basescan ↗
-        </a>
+        ${logs.length} trade(s) on-chain —
+        <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">View on Basescan ↗</a>
       </div>`;
       return;
     }
@@ -501,9 +505,10 @@ async function fetchChain() {
   } catch(e) {
     console.error("fetchChain error:", e.message);
     document.getElementById("trade-count").textContent = "—";
-    list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);color:var(--muted);padding:12px;line-height:2.2;">
+    list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);padding:14px;line-height:2.5;">
+      <span style="color:var(--muted);">Trades are on-chain — view directly:</span><br>
       <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">
-        View all on-chain trades on Basescan ↗
+        Basescan Contract Events ↗
       </a>
     </div>`;
   }
