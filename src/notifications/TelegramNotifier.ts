@@ -13,7 +13,6 @@ export class TelegramNotifier {
     this.botToken = process.env.TELEGRAM_BOT_TOKEN || "";
     this.chatId   = process.env.TELEGRAM_CHAT_ID   || "";
     this.enabled  = !!(this.botToken && this.chatId);
-
     if (this.enabled) logger.info("📱 Telegram notifications enabled");
     else logger.warn("📱 Telegram not configured — skipping notifications");
   }
@@ -21,17 +20,21 @@ export class TelegramNotifier {
   async notifyTradeExecuted(receipt: TradeReceipt, decision: TradeDecision, snapshot: MarketSnapshot): Promise<void> {
     if (!this.enabled) return;
 
-    const emoji   = decision.action === "BUY" ? "🟢" : "🔴";
+    const emoji    = decision.action === "BUY" ? "🟢" : "🔴";
+    const asset    = decision.asset || "ETH";
+    const isAlt    = decision.isAltcoin ? ` (Base altcoin)` : "";
     const chainUrl = process.env.CHAIN === "base-sepolia"
       ? `https://sepolia.basescan.org/tx/${receipt.txHash}`
       : `https://basescan.org/tx/${receipt.txHash}`;
 
+    const isMock = receipt.txHash.startsWith("0xMOCK");
+
     const message = `
 ${emoji} *CryptoSentinel Trade Executed*
 
-*Action:* ${decision.action} ETH
+*Action:* ${decision.action} ${asset}${isAlt}
 *Amount:* $${receipt.amountUsd.toFixed(2)} (${receipt.amountToken})
-*DEX:* Uniswap V3 on Base
+*DEX:* Uniswap V3 on Base${isMock ? " _(testnet simulation)_" : ""}
 
 📊 *Market at execution:*
 • ETH Price: $${snapshot.ethPrice.toFixed(2)}
@@ -50,7 +53,6 @@ Confidence: ${decision.confidence}%
 
   async notifyHold(decision: TradeDecision, snapshot: MarketSnapshot): Promise<void> {
     if (!this.enabled) return;
-    // Only notify on hold if it's particularly noteworthy (high confidence hold)
     if (decision.confidence < 80) return;
 
     const message = `
@@ -74,10 +76,10 @@ Agent started on ${process.env.CHAIN === "base-sepolia" ? "Base Sepolia (testnet
 Wallet: \`${walletAddress}\`
 Poll interval: every ${parseInt(process.env.POLL_INTERVAL_MS || "60000") / 1000}s
 DEX: Uniswap V3
+Scanner: Base ecosystem altcoins + memecoins
 
 _Monitoring markets 24/7..._
 `.trim();
-
     await this.send(message);
   }
 

@@ -295,17 +295,31 @@ const RPC      = "https://sepolia.base.org";
 const SCAN     = "https://sepolia.basescan.org";
 
 const ABI = [
-  { name:"getTrades", type:"function", stateMutability:"view",
-    inputs:[{name:"agent",type:"address"}],
-    outputs:[{name:"",type:"tuple[]",components:[
-      {name:"action",    type:"string"  },
-      {name:"amountUsd", type:"uint256" },
-      {name:"ethPrice",  type:"uint256" },
-      {name:"confidence",type:"uint8"   },
-      {name:"reasoning", type:"string"  },
-      {name:"txHash",    type:"bytes32" },
-      {name:"timestamp", type:"uint256" },
-    ]}]
+  {
+    name: "getTrades",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "agent", type: "address" }],
+    outputs: [{
+      name: "",
+      type: "tuple[]",
+      components: [
+        { name: "action",     type: "string"  },
+        { name: "amountUsd",  type: "uint256" },
+        { name: "ethPrice",   type: "uint256" },
+        { name: "confidence", type: "uint8"   },
+        { name: "reasoning",  type: "string"  },
+        { name: "txHash",     type: "bytes32" },
+        { name: "timestamp",  type: "uint256" },
+      ],
+    }],
+  },
+  {
+    name: "getTradeCount",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "agent", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
   },
 ];
 
@@ -396,54 +410,65 @@ async function fetchChain() {
   try {
     const provider = new ethers.JsonRpcProvider(RPC);
 
-    // ETH balance — separate try so a contract error doesn't kill balance display
+    // ETH balance
     try {
       const balWei = await provider.getBalance(WALLET);
       const balEth = parseFloat(ethers.formatEther(balWei));
-      document.getElementById("eth-bal").textContent      = balEth.toFixed(4) + " ETH";
-      document.getElementById("portfolio").textContent    = "$" + (balEth * 2100 + 700).toFixed(0);
+      document.getElementById("eth-bal").textContent       = balEth.toFixed(4) + " ETH";
+      document.getElementById("portfolio").textContent     = "$" + (balEth * 2100 + 700).toFixed(0);
       document.getElementById("portfolio-sub").textContent = balEth.toFixed(4) + " ETH + USDC";
     } catch(_) {}
 
-    // Trade log — contract may return empty bytes if no trades yet
+    // Read trade count first (simpler call, less likely to fail)
+    let count = 0;
     let trades = [];
     try {
       const contract = new ethers.Contract(CONTRACT, ABI, provider);
-      trades = await contract.getTrades(WALLET);
-    } catch(contractErr) {
-      // BAD_DATA / empty return = no trades logged yet, treat as empty array
-      const msg = contractErr.message || "";
-      if (msg.includes("BAD_DATA") || msg.includes("0x") || msg.includes("could not decode")) {
-        trades = [];
-      } else {
-        throw contractErr;
+
+      // Get count first
+      try {
+        const rawCount = await contract.getTradeCount(WALLET);
+        count = Number(rawCount);
+      } catch(_) {}
+
+      document.getElementById("trade-count").textContent = count;
+
+      if (count === 0) {
+        list.innerHTML = `<div class="empty">No trades logged yet.<br><br>Agent is live — trade entries appear here once Claude executes a BUY or SELL.</div>`;
+        return;
       }
+
+      // Get full trade list
+      trades = await contract.getTrades(WALLET);
+    } catch(e) {
+      const msg = (e.message || "").toLowerCase();
+      if (msg.includes("bad_data") || msg.includes("could not decode") || msg.includes("0x"")) {
+        list.innerHTML = `<div class="empty">No trades logged yet.<br><br>Agent is live — trade entries appear here once Claude executes a BUY or SELL.</div>`;
+        document.getElementById("trade-count").textContent = "0";
+        return;
+      }
+      throw e;
     }
 
-    document.getElementById("trade-count").textContent = trades.length || "0";
-
-    if (!trades.length) {
-      list.innerHTML = `<div class="empty">
-        No trades logged yet.<br><br>
-        Agent is live and monitoring — a trade entry<br>
-        will appear here once Claude executes a BUY or SELL<br>
-        and the market conditions warrant it.
-      </div>`;
+    if (!trades || !trades.length) {
+      list.innerHTML = `<div class="empty">No trades logged yet.</div>`;
       return;
     }
 
-    list.innerHTML = [...trades].reverse().slice(0,8).map(t => {
-      const amt  = (Number(t.amountUsd)/100).toFixed(2);
-      const px   = (Number(t.ethPrice)/100).toFixed(0);
-      const time = new Date(Number(t.timestamp)*1000).toLocaleString();
-      const mock = t.txHash === "0x"+"0".repeat(64);
-      const hash = t.txHash;
+    list.innerHTML = [...trades].reverse().slice(0, 10).map(t => {
+      const amt     = (Number(t.amountUsd) / 100).toFixed(2);
+      const px      = (Number(t.ethPrice)  / 100).toFixed(0);
+      const ts      = Number(t.timestamp);
+      const time    = ts > 0 ? new Date(ts * 1000).toLocaleString() : "—";
+      const isMock  = t.txHash === "0x" + "0".repeat(64);
+      const hash    = t.txHash;
+      const action  = t.action || "BUY";
       return `<div class="trade-row">
-        <span class="action-pill ${mock?"SIM":t.action}">${mock?"SIM":t.action}</span>
+        <span class="action-pill ${isMock ? "SIM" : action}">${isMock ? "SIM" : action}</span>
         <span style="color:var(--text);font-weight:700;">$${amt}</span>
         <span style="color:var(--muted);font-size:11px;">@ $${px}</span>
-        ${mock
-          ? `<span style="color:var(--muted);">simulated</span>`
+        ${isMock
+          ? `<span style="color:var(--muted);font-size:11px;">testnet simulated</span>`
           : `<a class="tx-link" href="${SCAN}/tx/${hash}" target="_blank">${hash.slice(0,10)}...${hash.slice(-6)}</a>`
         }
         <span class="trade-time">${time}</span>
@@ -451,7 +476,8 @@ async function fetchChain() {
     }).join("");
 
   } catch(e) {
-    list.innerHTML = `<div class="err">Connection error — check RPC: ${e.message.slice(0,80)}</div>`;
+    list.innerHTML = `<div class="err">RPC error: ${(e.message||"").slice(0, 80)}</div>`;
+    console.error("fetchChain error:", e);
   }
 }
 

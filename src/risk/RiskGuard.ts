@@ -1,5 +1,6 @@
 import { TradeDecision } from "../brain/ClaudeBrain";
 import { PortfolioState } from "../utils/Portfolio";
+import { logger } from "../utils/logger";
 
 export interface RiskCheckResult {
   ok: boolean;
@@ -7,66 +8,61 @@ export interface RiskCheckResult {
 }
 
 export class RiskGuard {
-  private maxRiskPerTrade: number;
-  private stopLossThreshold: number;
-  private minConfidence: number = 60; // Claude must be ≥60% confident
+  private maxRiskPerTrade:    number;
+  private stopLossThreshold:  number;
+  private minConfidence:      number = 60;
+  private lastTradeTime:      number = 0;
+  private lastTradeAsset:     string = "";
+  private tradeCooldownMs:    number = 5 * 60 * 1000; // 5 min cooldown per asset
 
   constructor() {
-    this.maxRiskPerTrade = parseFloat(process.env.MAX_RISK_PER_TRADE || "0.02");
-    this.stopLossThreshold = parseFloat(process.env.STOP_LOSS_THRESHOLD || "0.05");
+    this.maxRiskPerTrade   = parseFloat(process.env.MAX_RISK_PER_TRADE   || "0.02");
+    this.stopLossThreshold = parseFloat(process.env.STOP_LOSS_THRESHOLD  || "0.05");
   }
 
   approve(decision: TradeDecision, portfolio: PortfolioState): RiskCheckResult {
-    // 1. HOLD always passes
-    if (decision.action === "HOLD") {
-      return { ok: true };
-    }
+    if (decision.action === "HOLD") return { ok: true };
 
-    // 2. Confidence check
+    // 1. Confidence check
     if (decision.confidence < this.minConfidence) {
-      return {
-        ok: false,
-        reason: `Confidence too low: ${decision.confidence}% < ${this.minConfidence}% minimum`,
-      };
+      return { ok: false, reason: `Confidence too low: ${decision.confidence}% < ${this.minConfidence}% minimum` };
     }
 
-    // 3. Trade size check — can't risk more than maxRiskPerTrade of portfolio
-    const maxAllowed = portfolio.totalValueUsd * this.maxRiskPerTrade;
+    // 2. Cooldown — don't spam the same asset every cycle
+    const now = Date.now();
+    const sameAsset = decision.asset === this.lastTradeAsset;
+    const inCooldown = (now - this.lastTradeTime) < this.tradeCooldownMs;
+    if (sameAsset && inCooldown) {
+      const remaining = Math.round((this.tradeCooldownMs - (now - this.lastTradeTime)) / 1000);
+      return { ok: false, reason: `Cooldown active for ${decision.asset} — ${remaining}s remaining` };
+    }
+
+    // 3. Trade size check
+    const maxPct     = decision.isAltcoin ? 0.01 : this.maxRiskPerTrade;
+    const maxAllowed = portfolio.totalValueUsd * maxPct;
     if (decision.amountUsd > maxAllowed) {
-      return {
-        ok: false,
-        reason: `Trade size $${decision.amountUsd} exceeds max allowed $${maxAllowed.toFixed(2)} (${this.maxRiskPerTrade * 100}% of portfolio)`,
-      };
+      return { ok: false, reason: `Trade size $${decision.amountUsd} exceeds max $${maxAllowed.toFixed(2)} (${maxPct * 100}% of portfolio)` };
     }
 
-    // 4. Minimum trade size — avoid dust transactions
+    // 4. Min trade size
     if (decision.amountUsd < 1) {
-      return {
-        ok: false,
-        reason: `Trade amount $${decision.amountUsd} is below $1 minimum`,
-      };
+      return { ok: false, reason: `Trade amount $${decision.amountUsd} below $1 minimum` };
     }
 
-    // 5. For SELL — make sure we have enough ETH to sell
-    if (decision.action === "SELL") {
-      if (portfolio.ethValueUsd < decision.amountUsd) {
-        return {
-          ok: false,
-          reason: `Insufficient ETH: trying to sell $${decision.amountUsd} but only have $${portfolio.ethValueUsd.toFixed(2)}`,
-        };
-      }
+    // 5. SELL — enough to sell?
+    if (decision.action === "SELL" && portfolio.ethValueUsd < decision.amountUsd) {
+      return { ok: false, reason: `Insufficient ETH: have $${portfolio.ethValueUsd.toFixed(2)}, need $${decision.amountUsd}` };
     }
 
-    // 6. For BUY — make sure we have enough USDC
-    if (decision.action === "BUY") {
-      if (portfolio.usdcBalance < decision.amountUsd) {
-        return {
-          ok: false,
-          reason: `Insufficient USDC: trying to buy $${decision.amountUsd} but only have $${portfolio.usdcBalance.toFixed(2)}`,
-        };
-      }
+    // 6. BUY — enough USDC?
+    if (decision.action === "BUY" && portfolio.usdcBalance < decision.amountUsd) {
+      return { ok: false, reason: `Insufficient USDC: have $${portfolio.usdcBalance.toFixed(2)}, need $${decision.amountUsd}` };
     }
 
+    // Approved — record trade
+    this.lastTradeTime  = now;
+    this.lastTradeAsset = decision.asset;
+    logger.info(`   ✅ Risk approved for ${decision.action} ${decision.asset}`);
     return { ok: true };
   }
 }
