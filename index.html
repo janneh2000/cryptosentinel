@@ -412,77 +412,88 @@ async function fetchMarket() {
 async function fetchChain() {
   const list = document.getElementById("trade-list");
 
-  // ── ETH Balance via direct RPC ──────────────────────────────────────
-  try {
-    const balBody = JSON.stringify({
-      jsonrpc:"2.0", id:1, method:"eth_getBalance",
-      params:[WALLET, "latest"]
-    });
-    const balRes = await Promise.race([
-      fetch(RPC, {method:"POST", headers:{"Content-Type":"application/json"}, body:balBody}).then(r=>r.json()),
-      new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 6000))
-    ]);
-    if (balRes.result) {
-      const balEth = parseInt(balRes.result, 16) / 1e18;
-      document.getElementById("eth-bal").textContent       = balEth.toFixed(4) + " ETH";
-      document.getElementById("portfolio").textContent     = "$" + (balEth * 2100 + 700).toFixed(0);
-      document.getElementById("portfolio-sub").textContent = balEth.toFixed(4) + " ETH + USDC";
+  // Try multiple RPCs for reliability
+  const RPCS = [
+    "https://sepolia.base.org",
+    "https://base-sepolia.public.blastapi.io",
+    "https://base-sepolia-rpc.publicnode.com",
+  ];
+
+  const rpcCall = async (method, params) => {
+    for (const rpc of RPCS) {
+      try {
+        const res = await Promise.race([
+          fetch(rpc, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({jsonrpc:"2.0", id:1, method, params})
+          }).then(r => r.json()),
+          new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 7000))
+        ]);
+        if (res.result !== undefined) return res.result;
+      } catch(_) { continue; }
     }
+    throw new Error("all RPCs failed");
+  };
+
+  // ── ETH Balance ────────────────────────────────────────────────────
+  try {
+    const balHex = await rpcCall("eth_getBalance", [WALLET, "latest"]);
+    const balEth = parseInt(balHex, 16) / 1e18;
+    document.getElementById("eth-bal").textContent       = balEth.toFixed(4) + " ETH";
+    document.getElementById("portfolio").textContent     = "$" + (balEth * 2100 + 700).toFixed(0);
+    document.getElementById("portfolio-sub").textContent = balEth.toFixed(4) + " ETH + USDC";
   } catch(_) {}
 
-  // ── Trade Log via ethers.js ────────────────────────────────────────
+  // ── Trade Log via ethers.js Contract ──────────────────────────────
   try {
-    const provider = new ethers.JsonRpcProvider(RPC);
-
-    // Use ethers Interface to encode calls correctly
-    const iface = new ethers.Interface([
+    // Use ethers.Contract — it handles ABI encoding/decoding correctly
+    const provider = new ethers.JsonRpcProvider("https://sepolia.base.org");
+    const abi = [
       "function getTradeCount(address agent) view returns (uint256)",
       "function getTrades(address agent) view returns (tuple(string action, uint256 amountUsd, uint256 ethPrice, uint8 confidence, string reasoning, bytes32 txHash, uint256 timestamp)[])"
-    ]);
+    ];
+    const contract = new ethers.Contract(CONTRACT, abi, provider);
 
-    // Call getTradeCount
-    const countData = iface.encodeFunctionData("getTradeCount", [WALLET]);
-    const countRes  = await Promise.race([
-      fetch(RPC, {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({jsonrpc:"2.0",id:2,method:"eth_call",params:[{to:CONTRACT,data:countData},"latest"]})
-      }).then(r=>r.json()),
-      new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 8000))
-    ]);
-
+    // Get count with timeout
     let count = 0;
-    if (countRes.result && countRes.result !== "0x") {
-      count = Number(iface.decodeFunctionResult("getTradeCount", countRes.result)[0]);
+    try {
+      const raw = await Promise.race([
+        contract.getTradeCount(WALLET),
+        new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 10000))
+      ]);
+      count = Number(raw);
+      console.log("Trade count:", count);
+    } catch(e) {
+      console.warn("getTradeCount failed:", e.message);
     }
 
     document.getElementById("trade-count").textContent = count;
 
     if (count === 0) {
-      list.innerHTML = `<div class="empty">No trades on-chain yet.<br><br>Agent is live — trade entries appear here once Claude executes a confirmed BUY or SELL on Base Sepolia.</div>`;
+      list.innerHTML = `<div class="empty">
+        No trades on-chain yet.<br><br>
+        <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);text-decoration:underline;">
+          View contract events on Basescan ↗
+        </a>
+      </div>`;
       return;
     }
 
-    // Call getTrades
-    const tradesData = iface.encodeFunctionData("getTrades", [WALLET]);
-    const tradesRes  = await Promise.race([
-      fetch(RPC, {
-        method: "POST",
-        headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({jsonrpc:"2.0",id:3,method:"eth_call",params:[{to:CONTRACT,data:tradesData},"latest"]})
-      }).then(r=>r.json()),
-      new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 12000))
+    // Get trades with timeout
+    const trades = await Promise.race([
+      contract.getTrades(WALLET),
+      new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 15000))
     ]);
 
-    if (!tradesRes.result || tradesRes.result === "0x") {
-      list.innerHTML = `<div class="empty">${count} trade(s) on-chain — <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">View on Basescan ↗</a></div>`;
+    console.log("Trades loaded:", trades.length);
+
+    if (!trades || !trades.length) {
+      list.innerHTML = `<div class="empty">${count} trade(s) recorded — <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">View on Basescan ↗</a></div>`;
       return;
     }
 
-    const decoded = iface.decodeFunctionResult("getTrades", tradesRes.result)[0];
-    const trades  = [...decoded].reverse().slice(0, 10);
-
-    list.innerHTML = trades.map(t => {
+    list.innerHTML = [...trades].reverse().slice(0, 10).map(t => {
       const amt    = (Number(t.amountUsd) / 100).toFixed(2);
       const px     = (Number(t.ethPrice)  / 100).toFixed(0);
       const ts     = Number(t.timestamp);
@@ -504,11 +515,9 @@ async function fetchChain() {
 
   } catch(e) {
     console.error("fetchChain error:", e);
-    // Always show a working fallback link
-    list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);color:var(--muted);padding:12px;line-height:1.8;">
-      RPC loading...<br>
+    list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);color:var(--muted);padding:12px;line-height:2;">
       <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">
-        View all trades on Basescan ↗
+        View all on-chain trades on Basescan ↗
       </a>
     </div>`;
   }
