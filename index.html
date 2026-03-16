@@ -411,98 +411,106 @@ async function fetchMarket() {
 
 async function fetchChain() {
   const list = document.getElementById("trade-list");
+
+  // ── ETH Balance via direct RPC ──────────────────────────────────────
   try {
-    // Use Basescan API to get contract events — more reliable than direct RPC from browser
-    const BASESCAN_API = "https://api-sepolia.basescan.org/api";
-    
-    // Get ETH balance via Basescan
+    const balBody = JSON.stringify({
+      jsonrpc:"2.0", id:1, method:"eth_getBalance",
+      params:[WALLET, "latest"]
+    });
     const balRes = await Promise.race([
-      fetch(`${BASESCAN_API}?module=account&action=balance&address=${WALLET}&tag=latest`).then(r=>r.json()),
-      new Promise((_,reject) => setTimeout(() => reject(new Error("timeout")), 8000))
+      fetch(RPC, {method:"POST", headers:{"Content-Type":"application/json"}, body:balBody}).then(r=>r.json()),
+      new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 6000))
     ]);
-    if (balRes.status === "1") {
-      const balEth = parseInt(balRes.result) / 1e18;
+    if (balRes.result) {
+      const balEth = parseInt(balRes.result, 16) / 1e18;
       document.getElementById("eth-bal").textContent       = balEth.toFixed(4) + " ETH";
       document.getElementById("portfolio").textContent     = "$" + (balEth * 2100 + 700).toFixed(0);
       document.getElementById("portfolio-sub").textContent = balEth.toFixed(4) + " ETH + USDC";
     }
+  } catch(_) {}
 
-    // Get TradeLogged events from contract
-    const logsRes = await Promise.race([
-      fetch(`${BASESCAN_API}?module=logs&action=getLogs&address=${CONTRACT}&topic0=0x&fromBlock=0&toBlock=latest`).then(r=>r.json()),
-      new Promise((_,reject) => setTimeout(() => reject(new Error("timeout")), 8000))
+  // ── Trade Log via ethers.js ────────────────────────────────────────
+  try {
+    const provider = new ethers.JsonRpcProvider(RPC);
+
+    // Use ethers Interface to encode calls correctly
+    const iface = new ethers.Interface([
+      "function getTradeCount(address agent) view returns (uint256)",
+      "function getTrades(address agent) view returns (tuple(string action, uint256 amountUsd, uint256 ethPrice, uint8 confidence, string reasoning, bytes32 txHash, uint256 timestamp)[])"
     ]);
 
-    // Also try getTradeCount via direct RPC call
-    let count = 0;
-    try {
-      // Encode getTradeCount(address) call: selector + padded address
-      const selector = "0x5c77f7f5"; // keccak256("getTradeCount(address)")[:4]
-      const paddedAddr = WALLET.slice(2).toLowerCase().padStart(64, "0");
-      const rpcBody = JSON.stringify({
-        jsonrpc: "2.0", id: 1, method: "eth_call",
-        params: [{ to: CONTRACT, data: selector + paddedAddr }, "latest"]
-      });
-      const rpcRes = await Promise.race([
-        fetch("https://sepolia.base.org", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: rpcBody
-        }).then(r => r.json()),
-        new Promise((_,reject) => setTimeout(() => reject(new Error("rpc timeout")), 6000))
-      ]);
-      if (rpcRes.result && rpcRes.result !== "0x") {
-        count = parseInt(rpcRes.result, 16);
-      }
-    } catch(_) {}
+    // Call getTradeCount
+    const countData = iface.encodeFunctionData("getTradeCount", [WALLET]);
+    const countRes  = await Promise.race([
+      fetch(RPC, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({jsonrpc:"2.0",id:2,method:"eth_call",params:[{to:CONTRACT,data:countData},"latest"]})
+      }).then(r=>r.json()),
+      new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 8000))
+    ]);
 
-    document.getElementById("trade-count").textContent = count || 0;
+    let count = 0;
+    if (countRes.result && countRes.result !== "0x") {
+      count = Number(iface.decodeFunctionResult("getTradeCount", countRes.result)[0]);
+    }
+
+    document.getElementById("trade-count").textContent = count;
 
     if (count === 0) {
-      list.innerHTML = `<div class="empty">No trades on-chain yet.<br><br>Agent is live and monitoring — trade entries appear here once Claude executes a confirmed BUY or SELL on Base Sepolia.</div>`;
+      list.innerHTML = `<div class="empty">No trades on-chain yet.<br><br>Agent is live — trade entries appear here once Claude executes a confirmed BUY or SELL on Base Sepolia.</div>`;
       return;
     }
 
-    // Try to read trades via ethers if count > 0
-    try {
-      const provider = new ethers.JsonRpcProvider("https://sepolia.base.org");
-      const contract = new ethers.Contract(CONTRACT, ABI, provider);
-      const trades   = await Promise.race([
-        contract.getTrades(WALLET),
-        new Promise((_,reject) => setTimeout(() => reject(new Error("trades timeout")), 10000))
-      ]);
+    // Call getTrades
+    const tradesData = iface.encodeFunctionData("getTrades", [WALLET]);
+    const tradesRes  = await Promise.race([
+      fetch(RPC, {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({jsonrpc:"2.0",id:3,method:"eth_call",params:[{to:CONTRACT,data:tradesData},"latest"]})
+      }).then(r=>r.json()),
+      new Promise((_,rej) => setTimeout(() => rej(new Error("timeout")), 12000))
+    ]);
 
-      if (trades && trades.length > 0) {
-        list.innerHTML = [...trades].reverse().slice(0, 10).map(t => {
-          const amt    = (Number(t.amountUsd) / 100).toFixed(2);
-          const px     = (Number(t.ethPrice)  / 100).toFixed(0);
-          const ts     = Number(t.timestamp);
-          const time   = ts > 0 ? new Date(ts * 1000).toLocaleString() : "—";
-          const isMock = t.txHash === "0x" + "0".repeat(64);
-          const hash   = t.txHash;
-          const action = t.action || "BUY";
-          return `<div class="trade-row">
-            <span class="action-pill ${isMock ? "SIM" : action}">${isMock ? "SIM" : action}</span>
-            <span style="color:var(--text);font-weight:700;">$${amt}</span>
-            <span style="color:var(--muted);font-size:11px;">@ $${px}</span>
-            ${isMock
-              ? `<span style="color:var(--muted);font-size:11px;">testnet sim</span>`
-              : `<a class="tx-link" href="${SCAN}/tx/${hash}" target="_blank">${hash.slice(0,10)}...${hash.slice(-6)}</a>`
-            }
-            <span class="trade-time">${time}</span>
-          </div>`;
-        }).join("");
-        return;
-      }
-    } catch(_) {}
+    if (!tradesRes.result || tradesRes.result === "0x") {
+      list.innerHTML = `<div class="empty">${count} trade(s) on-chain — <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">View on Basescan ↗</a></div>`;
+      return;
+    }
 
-    list.innerHTML = `<div class="empty">${count} trade(s) logged — <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">view on Basescan ↗</a></div>`;
+    const decoded = iface.decodeFunctionResult("getTrades", tradesRes.result)[0];
+    const trades  = [...decoded].reverse().slice(0, 10);
+
+    list.innerHTML = trades.map(t => {
+      const amt    = (Number(t.amountUsd) / 100).toFixed(2);
+      const px     = (Number(t.ethPrice)  / 100).toFixed(0);
+      const ts     = Number(t.timestamp);
+      const time   = ts > 0 ? new Date(ts * 1000).toLocaleString() : "—";
+      const isMock = t.txHash === "0x" + "0".repeat(64);
+      const hash   = t.txHash;
+      const action = t.action || "BUY";
+      return `<div class="trade-row">
+        <span class="action-pill ${isMock ? "SIM" : action}">${isMock ? "SIM" : action}</span>
+        <span style="color:var(--text);font-weight:700;">$${amt}</span>
+        <span style="color:var(--muted);font-size:11px;">@ $${px}</span>
+        ${isMock
+          ? `<span style="color:var(--muted);font-size:11px;">testnet sim</span>`
+          : `<a class="tx-link" href="${SCAN}/tx/${hash}" target="_blank">${hash.slice(0,10)}...${hash.slice(-6)}</a>`
+        }
+        <span class="trade-time">${time}</span>
+      </div>`;
+    }).join("");
 
   } catch(e) {
-    list.innerHTML = `<div style="font-size:11px;font-family:var(--mono);color:var(--muted);padding:12px;">
-      Loading trade history... <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">View on Basescan ↗</a>
-    </div>`;
     console.error("fetchChain error:", e);
+    // Always show a working fallback link
+    list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);color:var(--muted);padding:12px;line-height:1.8;">
+      RPC loading...<br>
+      <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">
+        View all trades on Basescan ↗
+      </a>
+    </div>`;
   }
 }
 
