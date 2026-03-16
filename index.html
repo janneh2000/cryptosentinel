@@ -442,8 +442,8 @@ async function fetchChain() {
 
     console.log("Basescan status:", res.status, "count:", (res.result||[]).length, res.message||"");
 
-    if (res.status !== "1" || !Array.isArray(res.result) || !res.result.length) {
-      // Basescan unavailable — show direct link as fallback
+    // Use results even if status is "0" — Basescan sometimes rate-limits but still returns data
+    if (!Array.isArray(res.result) || !res.result.length) {
       document.getElementById("trade-count").textContent = "—";
       list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);padding:14px;line-height:2.5;text-align:center;">
         <span style="color:var(--muted);">Trades are confirmed on-chain:</span><br>
