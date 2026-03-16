@@ -428,51 +428,49 @@ async function fetchChain() {
     }
   } catch(_){}
 
-  // Trade log via Basescan API (no block range limit, no API key needed for basic queries)
+  // Trade log via Basescan API — paginate to get all trades
   try {
     list.innerHTML = `<div style="font-size:11px;font-family:var(--mono);color:var(--muted);padding:8px;">Loading trades...</div>`;
 
-    // Basescan getLogs API - no block range restriction, no API key needed
-    const url = `https://api-sepolia.basescan.org/api?module=logs&action=getLogs` +
-      `&address=${CONTRACT}&fromBlock=0&toBlock=latest&page=1&offset=20`;
+    // Fetch last 100 events from Basescan (no block range limit)
+    const url = `https://api-sepolia.basescan.org/api?module=logs&action=getLogs&address=${CONTRACT}&fromBlock=0&toBlock=latest&page=1&offset=100&sort=desc`;
 
     const res = await Promise.race([
-      fetch(url).then(r=>r.json()),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),12000))
+      fetch(url).then(r => r.json()),
+      new Promise((_,rej) => setTimeout(()=>rej(new Error("basescan timeout")), 15000))
     ]);
 
-    console.log("Basescan logs status:", res.status, "count:", (res.result||[]).length);
+    console.log("Basescan status:", res.status, "count:", (res.result||[]).length, res.message||"");
 
-    const logs = Array.isArray(res.result) ? res.result : [];
-    document.getElementById("trade-count").textContent = logs.length || "—";
-
-    if (!logs.length) {
-      list.innerHTML = `<div class="empty">
-        No trades found yet.<br><br>
+    if (res.status !== "1" || !Array.isArray(res.result) || !res.result.length) {
+      // Basescan unavailable — show direct link as fallback
+      document.getElementById("trade-count").textContent = "—";
+      list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);padding:14px;line-height:2.5;text-align:center;">
+        <span style="color:var(--muted);">Trades are confirmed on-chain:</span><br>
         <a href="${SCAN}/address/${CONTRACT}#events" target="_blank"
-           style="color:var(--blue);text-decoration:underline;font-family:var(--mono);font-size:12px;">
-          View contract events on Basescan ↗
+           style="color:var(--blue);font-size:13px;font-weight:700;text-decoration:underline;">
+          View All On-Chain Trades ↗
         </a>
       </div>`;
       return;
     }
 
-    // Decode with ethers Interface
+    const logs = res.result;
+    document.getElementById("trade-count").textContent = logs.length;
+
     const iface = new ethers.Interface([
       "event TradeLogged(address indexed agent, string action, uint256 amountUsd, uint256 ethPrice, uint8 confidence, string reasoning, bytes32 txHash, uint256 timestamp)"
     ]);
 
     const parsed = logs.map(log => {
       try {
-        return iface.parseLog({
-          topics: log.topics,
-          data:   log.data
-        });
-      } catch(e) { console.warn("parse fail:", e.message); return null; }
+        // Basescan returns topics as array, data as hex string
+        const topics = Array.isArray(log.topics) ? log.topics : [log.topics];
+        return iface.parseLog({ topics, data: log.data });
+      } catch(e) { return null; }
     }).filter(Boolean);
 
-    console.log("Parsed:", parsed.length);
-    document.getElementById("trade-count").textContent = logs.length;
+    console.log("Parsed trade events:", parsed.length);
 
     if (!parsed.length) {
       list.innerHTML = `<div class="empty">
@@ -482,16 +480,17 @@ async function fetchChain() {
       return;
     }
 
-    list.innerHTML = [...parsed].reverse().slice(0,10).map(d => {
+    // Already sorted desc from Basescan
+    list.innerHTML = parsed.slice(0, 10).map(d => {
       const action = d.args[1] || "BUY";
-      const amt    = (Number(d.args[2])/100).toFixed(2);
-      const px     = (Number(d.args[3])/100).toFixed(0);
+      const amt    = (Number(d.args[2]) / 100).toFixed(2);
+      const px     = (Number(d.args[3]) / 100).toFixed(0);
       const ts     = Number(d.args[7]);
-      const time   = ts > 0 ? new Date(ts*1000).toLocaleString() : "—";
+      const time   = ts > 0 ? new Date(ts * 1000).toLocaleString() : "—";
       const hash   = d.args[6];
-      const isMock = hash === "0x"+"0".repeat(64);
+      const isMock = hash === "0x" + "0".repeat(64);
       return `<div class="trade-row">
-        <span class="action-pill ${isMock?"SIM":action}">${isMock?"SIM":action}</span>
+        <span class="action-pill ${isMock ? "SIM" : action}">${isMock ? "SIM" : action}</span>
         <span style="color:var(--text);font-weight:700;">$${amt}</span>
         <span style="color:var(--muted);font-size:11px;">@ $${px}</span>
         ${isMock
@@ -505,10 +504,9 @@ async function fetchChain() {
   } catch(e) {
     console.error("fetchChain error:", e.message);
     document.getElementById("trade-count").textContent = "—";
-    list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);padding:14px;line-height:2.5;">
-      <span style="color:var(--muted);">Trades are on-chain — view directly:</span><br>
+    list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);padding:14px;line-height:2.5;text-align:center;">
       <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">
-        Basescan Contract Events ↗
+        View All On-Chain Trades on Basescan ↗
       </a>
     </div>`;
   }
