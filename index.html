@@ -428,63 +428,57 @@ async function fetchChain() {
     }
   } catch(_){}
 
-  // ── Read TradeLogged events via eth_getLogs (fast, no string decode) ──
-  // TradeLogged(address indexed agent, string action, uint256 amountUsd,
-  //   uint256 ethPrice, uint8 confidence, string reasoning, bytes32 txHash, uint256 timestamp)
-  // topic0 = keccak256("TradeLogged(address,string,uint256,uint256,uint8,string,bytes32,uint256)")
-  const TOPIC0 = "0x8f3c43e5c89bc1e43b7f26f2bb78b97aed3fd0cfd43e1b2cb1f8a13e1ad2c96d";
-
+  // ── Fetch ALL logs from TradeLog contract (no topic filter = most reliable) ──
   try {
+    list.innerHTML = `<div style="font-size:11px;font-family:var(--mono);color:var(--muted);padding:8px;">Loading...</div>`;
+
     const logsRes = await Promise.race([
-      fetch(RPC, {method:"POST",headers:{"Content-Type":"application/json"},
+      fetch(RPC, {
+        method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({
           jsonrpc:"2.0", id:2, method:"eth_getLogs",
-          params:[{
-            address: CONTRACT,
-            fromBlock: "0x0",
-            toBlock: "latest",
-            topics: [null, "0x000000000000000000000000" + WALLET.slice(2).toLowerCase()]
-          }]
+          params:[{ address: CONTRACT, fromBlock:"0x0", toBlock:"latest" }]
         })
       }).then(r=>r.json()),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error("logs timeout")),12000))
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("timeout")),12000))
     ]);
 
     const logs = logsRes.result || [];
-    const count = logs.length;
-    document.getElementById("trade-count").textContent = count;
-    console.log("TradeLogged events:", count);
+    console.log("Raw logs from contract:", logs.length, logsRes.error || "");
 
-    if (count === 0) {
-      list.innerHTML = `<div class="empty">No trades on-chain yet.<br><br>Agent is live — entries appear once Claude executes a confirmed trade.</div>`;
-      return;
-    }
-
-    // Decode each log — data contains ABI-encoded non-indexed fields
-    // Use ethers to decode the log data
+    // Parse with ethers Interface — handles all ABI encoding correctly
     const iface = new ethers.Interface([
       "event TradeLogged(address indexed agent, string action, uint256 amountUsd, uint256 ethPrice, uint8 confidence, string reasoning, bytes32 txHash, uint256 timestamp)"
     ]);
 
-    const decoded = logs.slice(-10).reverse().map(log => {
+    const parsed = [];
+    for (const log of logs) {
       try {
-        return iface.parseLog({ topics: log.topics, data: log.data });
-      } catch(e) { return null; }
-    }).filter(Boolean);
+        const decoded = iface.parseLog({topics: log.topics, data: log.data});
+        if (decoded) parsed.push(decoded);
+      } catch(_){}
+    }
 
-    if (!decoded.length) {
-      list.innerHTML = `<div class="empty">${count} trade(s) recorded — <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">View on Basescan ↗</a></div>`;
+    console.log("Parsed TradeLogged events:", parsed.length);
+    document.getElementById("trade-count").textContent = parsed.length;
+
+    if (!parsed.length) {
+      list.innerHTML = `<div class="empty">
+        No trades on-chain yet.<br><br>
+        <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">
+          View contract on Basescan ↗
+        </a>
+      </div>`;
       return;
     }
 
-    list.innerHTML = decoded.map(d => {
-      const args   = d.args;
-      const action = args[1] || "BUY";
-      const amt    = (Number(args[2]) / 100).toFixed(2);
-      const px     = (Number(args[3]) / 100).toFixed(0);
-      const ts     = Number(args[7]);
+    list.innerHTML = [...parsed].reverse().slice(0,10).map(d => {
+      const action = d.args[1] || "BUY";
+      const amt    = (Number(d.args[2]) / 100).toFixed(2);
+      const px     = (Number(d.args[3]) / 100).toFixed(0);
+      const ts     = Number(d.args[7]);
       const time   = ts > 0 ? new Date(ts*1000).toLocaleString() : "—";
-      const hash   = args[6];
+      const hash   = d.args[6];
       const isMock = hash === "0x"+"0".repeat(64);
       return `<div class="trade-row">
         <span class="action-pill ${isMock?"SIM":action}">${isMock?"SIM":action}</span>
@@ -499,8 +493,8 @@ async function fetchChain() {
     }).join("");
 
   } catch(e) {
-    console.error("fetchChain logs error:", e);
-    // Fallback — still show a working link
+    console.error("fetchChain error:", e.message);
+    document.getElementById("trade-count").textContent = "—";
     list.innerHTML = `<div style="font-size:12px;font-family:var(--mono);color:var(--muted);padding:12px;line-height:2.2;">
       <a href="${SCAN}/address/${CONTRACT}#events" target="_blank" style="color:var(--blue);">
         View all on-chain trades on Basescan ↗
