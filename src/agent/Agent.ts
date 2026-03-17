@@ -6,6 +6,7 @@ import { Executor } from "../executor/Executor";
 import { Portfolio } from "../utils/Portfolio";
 import { TelegramNotifier } from "../notifications/TelegramNotifier";
 import { OnChainTradeLog } from "../onchain/TradeLog";
+import { startSignalServer, updateLatestSignal } from "../x402/SignalServer";
 import { logger } from "../utils/logger";
 
 export class CryptoSentinelAgent {
@@ -38,7 +39,11 @@ export class CryptoSentinelAgent {
     this.running = true;
     const walletAddress = await this.executor.getWalletAddress();
     logger.info(`📡 Agent loop starting — polling every ${this.pollInterval / 1000}s`);
-    logger.info(`🔍 Token scanner enabled — Base ecosystem altcoins + memecoins`);
+    logger.info(`🔍 Token scanner: Base ecosystem altcoins + memecoins`);
+
+    // Start x402 signal server
+    startSignalServer(parseInt(process.env.SIGNAL_PORT || "3001"));
+
     await this.telegram.notifyStartup(walletAddress);
     await this.tick();
     this.timer = setInterval(async () => {
@@ -63,7 +68,7 @@ export class CryptoSentinelAgent {
       const snapshot: MarketSnapshot = await this.marketWatcher.getSnapshot();
       logger.info(`   ETH: $${snapshot.ethPrice.toFixed(2)} | 24h: ${snapshot.ethChange24h.toFixed(2)}% | F&G: ${snapshot.fearGreedIndex ?? "?"}/100`);
 
-      // 2. Token scan — run every cycle (results cached 5 mins internally)
+      // 2. Token scan
       logger.info("🔍 Scanning Base ecosystem tokens...");
       let topTokens: TokenCandidate[] = [];
       try {
@@ -71,7 +76,7 @@ export class CryptoSentinelAgent {
         if (topTokens.length > 0) {
           logger.info(`   Top pick: ${topTokens[0].symbol} (score: ${topTokens[0].score})`);
         }
-      } catch (e: any) {
+      } catch(e: any) {
         logger.warn(`   Token scan skipped: ${e.message}`);
       }
 
@@ -80,14 +85,33 @@ export class CryptoSentinelAgent {
       const portfolioState = await this.portfolio.getState(walletAddress);
       logger.info(`   Portfolio: $${portfolioState.totalValueUsd.toFixed(2)} | ETH: ${portfolioState.ethBalance.toFixed(4)} | USDC: $${portfolioState.usdcBalance.toFixed(2)}`);
 
-      // 4. Claude reasoning — passes both market + top tokens
+      // 4. Claude reasoning
       logger.info("🧠 Claude is analyzing market + Base tokens...");
       const decision: TradeDecision = await this.brain.analyze(snapshot, portfolioState, topTokens);
       logger.info(`   Decision: ${decision.action} ${decision.asset} | Confidence: ${decision.confidence}%`);
       logger.info(`   Reasoning: ${decision.reasoning}`);
       if (decision.signals?.length) logger.info(`   Signals: ${decision.signals.join(", ")}`);
 
-      // 5. Risk check
+      // 5. Update x402 signal server with latest analysis
+      updateLatestSignal({
+        timestamp:  Date.now(),
+        action:     decision.action,
+        asset:      decision.asset,
+        confidence: decision.confidence,
+        reasoning:  decision.reasoning,
+        signals:    decision.signals || [],
+        ethPrice:   snapshot.ethPrice,
+        fearGreed:  snapshot.fearGreedIndex ?? 0,
+        topTokens:  topTokens.slice(0, 5).map(t => ({
+          symbol:   t.symbol,
+          score:    t.score,
+          price:    t.priceUsd,
+          vol24h:   t.volumeUsd24h,
+          change1h: t.priceChange1h,
+        })),
+      });
+
+      // 6. Risk check
       logger.info("🛡️  Running risk checks...");
       const approved = this.riskGuard.approve(decision, portfolioState);
       if (!approved.ok) {
@@ -95,30 +119,27 @@ export class CryptoSentinelAgent {
         return;
       }
 
-      // 6. Hold path
+      // 7. Hold path
       if (decision.action === "HOLD") {
         logger.info("   ✋ Holding — no trade this cycle.");
         await this.telegram.notifyHold(decision, snapshot);
         return;
       }
 
-      // 7. Execute
+      // 8. Execute
       const label = decision.isAltcoin ? `${decision.asset} (altcoin)` : decision.asset;
       logger.info(`   ✅ Executing ${decision.action} ${label} via Uniswap V3...`);
       const receipt = await this.executor.execute({
-        ...decision,
-        ethPrice: snapshot.ethPrice,
+        ...decision, ethPrice: snapshot.ethPrice,
       } as any);
       logger.info(`   🎉 Trade done! TX: ${receipt.txHash}`);
 
-      // 8. Notifications
+      // 9. Notifications + log
       await this.telegram.notifyTradeExecuted(receipt, decision, snapshot);
-
-      // 9. On-chain log
       const logTx = await this.tradeLog.log(receipt, decision, snapshot.ethPrice);
-      if (logTx) logger.info(`   📋 Logged on-chain: ${logTx}`);
+      if (logTx) logger.info(`   📋 Logged onchain: ${logTx}`);
 
-    } catch (err: any) {
+    } catch(err: any) {
       logger.error("❌ Error during agent tick:", err.message);
       await this.telegram.notifyError(err.message);
     }
