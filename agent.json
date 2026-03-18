@@ -1,0 +1,100 @@
+{
+  "schemaVersion": "1.0.0",
+  "name": "CryptoSentinel",
+  "version": "1.0.0",
+  "description": "Autonomous 24/7 crypto trading agent on Base chain. Monitors live market data, scans the Base ecosystem for trending tokens, makes AI-driven trading decisions using Claude Sonnet, executes trades via Uniswap V3, and logs every decision immutably onchain. Exposes trading signals as a paid x402 API service.",
+  "operatorWallet": "0xdCA68E190D47B62E330C9DEb634103A6479eC4fA",
+  "erc8004": {
+    "chainId": 84532,
+    "registry": "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+    "registrationTx": "0x2fac686e9217a0936e88ff5387f75b232ff1409ca9c14c5bece51531d6ecc500",
+    "synthesisTx": "0xebabc0c09521b346859eec22c19cff27c691f104b76a50849202bc19674fb9c9",
+    "custodyType": "self_custody",
+    "selfCustodyVerifiedAt": "2026-03-17T23:41:38.049Z"
+  },
+  "model": "claude-sonnet-4-6",
+  "framework": "Custom TypeScript orchestration",
+  "runtime": "Node.js 20",
+  "chain": "base-sepolia",
+  "supportedTools": [
+    "CoinGecko API — live ETH/BTC price feeds",
+    "Binance API — real-time ticker data",
+    "Fear and Greed Index API — market sentiment",
+    "DexScreener API — Base ecosystem token scanner",
+    "Uniswap V3 SwapRouter02 — onchain trade execution",
+    "Anthropic Claude API — market analysis and reasoning",
+    "Telegram Bot API — real-time trade notifications",
+    "TradeLog.sol — immutable onchain trade history",
+    "ERC-8004 Identity Registry — agent identity",
+    "x402 Signal Server — paid signal API"
+  ],
+  "techStack": [
+    "TypeScript",
+    "viem",
+    "ethers.js",
+    "express",
+    "Anthropic SDK",
+    "winston",
+    "axios",
+    "Vercel (dashboard hosting)",
+    "Chart.js",
+    "Solidity 0.8.20"
+  ],
+  "taskCategories": [
+    "autonomous-trading",
+    "market-analysis",
+    "risk-management",
+    "onchain-execution",
+    "signal-marketplace",
+    "agent-identity"
+  ],
+  "computeConstraints": {
+    "pollIntervalMs": 300000,
+    "maxRiskPerTradePercent": 2,
+    "altcoinMaxRiskPercent": 1,
+    "minConfidenceThreshold": 60,
+    "tradeCooldownMs": 300000,
+    "maxApiCallsPerCycle": 5
+  },
+  "autonomyLevel": "full",
+  "safetyGuardrails": [
+    "Minimum 60% confidence required before any trade",
+    "Maximum 2% portfolio risk per ETH trade",
+    "Maximum 1% portfolio risk per altcoin trade",
+    "5-minute cooldown between same-asset trades",
+    "Insufficient balance checks before execution",
+    "Error fallback always defaults to HOLD",
+    "Testnet simulation on Base Sepolia — no mainnet risk"
+  ],
+  "decisionLoop": "market_data → token_scan → claude_analysis → risk_check → execute → log_onchain → notify",
+  "onchainArtifacts": {
+    "tradeLogContract": "0xA40E8DA38760eAf987eF85CD00b28319F11c4CAD",
+    "tradeLogNetwork": "base-sepolia",
+    "tradeCount": "111+",
+    "basescanContract": "https://sepolia.basescan.org/address/0xA40E8DA38760eAf987eF85CD00b28319F11c4CAD"
+  },
+  "services": [
+    {
+      "name": "x402 Signal API",
+      "endpoint": "/api/signals",
+      "price": "0.10 USDC",
+      "protocol": "x402",
+      "description": "Pay 0.10 USDC to receive Claude's current market analysis — action, confidence, reasoning, and top Base tokens"
+    },
+    {
+      "name": "Preview API",
+      "endpoint": "/api/preview",
+      "price": "free",
+      "description": "Free preview showing ETH price and Fear and Greed index without the actionable signal"
+    },
+    {
+      "name": "A2A Discovery",
+      "endpoint": "/.well-known/agent-card.json",
+      "price": "free",
+      "description": "ERC-8004 compatible agent discovery card"
+    }
+  ],
+  "dashboard": "https://cryptosentinel-zeta.vercel.app",
+  "repository": "https://github.com/janneh2000/cryptosentinel",
+  "hackathon": "The Synthesis — March 2026"
+}
